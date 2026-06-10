@@ -14,6 +14,7 @@ use log::info;
 use itertools::Itertools;
 use std::collections::HashMap;
 
+pub(crate) mod axiom_shplonk;
 pub(crate) mod gwc;
 pub(crate) mod kzg;
 
@@ -22,6 +23,7 @@ pub(crate) mod kzg;
 pub enum PCSType {
     GWC19,
     Halo2MultiOpen,
+    AxiomSHPLONK,
 }
 
 /// Type for permutation point sets and related committed data.
