@@ -227,6 +227,18 @@ KZG variant from GWC19):
 slightly depending on the specific proof being verified. This variation stems from the randomness used during proof
 generation, which can be influenced by the initial seed or the platform on which the prover runs.
 
+### Axiom SHPLONK scalar multiplication benchmark
+
+The Axiom BLS12-381 SHPLONK benchmark generates a Secp256k1 variable-base scalar multiplication proof, emits Aiken and
+Plinth verifiers through the generic Axiom generator, and runs `aiken check` against the generated Aiken verifier:
+
+```bash
+RUSTC_BOOTSTRAP=1 cargo bench --bench axiom_secp_scalar_mul
+```
+
+The benchmark prints prover/generator timings and the Aiken `mem`/`cpu` ExUnits for
+`valid_axiom_shplonk_proof_benchmark`.
+
 ### Further improvements
 
 The upcoming CIP-109 (built-in modular inversion) and CIP-133 (built-in multi-scalar multiplication) are expected to

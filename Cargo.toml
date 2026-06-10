@@ -25,5 +25,13 @@ rand = "0.8"
 rand_chacha = "0.3.1"
 anyhow = "1.0.100"
 
+[dev-dependencies]
+halo2-base = { git = "https://github.com/vlasin/halo2-lib.git", rev = "2f753ef0508d5d7500865f2ca803069bcfe4c80d", default-features = false, features = ["halo2-axiom"] }
+halo2-ecc = { git = "https://github.com/vlasin/halo2-lib.git", rev = "2f753ef0508d5d7500865f2ca803069bcfe4c80d", default-features = false, features = ["halo2-axiom"] }
+
 [features]
 plutus_debug = ["halo2_proofs/plutus_debug"]
+
+[[bench]]
+name = "axiom_secp_scalar_mul"
+harness = false
