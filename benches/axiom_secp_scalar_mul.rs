@@ -1,4 +1,5 @@
 use std::{
+    env,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -42,6 +43,8 @@ use rand::{SeedableRng, rngs::StdRng};
 use serde_json::Value;
 
 const AIKEN_BENCHMARK_NAME: &str = "valid_axiom_shplonk_proof_benchmark";
+const PLINTH_BENCHMARK_GHC_VERSION: &str = "9.6.7";
+const PLINTH_BUDGET_LABEL: &str = "Axiom SHPLONK Plinth verifier budget:";
 
 #[derive(Clone, Copy, Debug)]
 struct ScalarMulParams {
@@ -153,6 +156,16 @@ fn main() {
     println!("aiken_mem: {mem}");
     println!("aiken_cpu: {cpu}");
     println!("aiken_check_time: {}", fmt_duration(aiken_time));
+
+    let plinth_start = Instant::now();
+    let plinth_output = run_plinth_benchmark();
+    let plinth_time = plinth_start.elapsed();
+    let (mem, cpu) = parse_plinth_budget(&plinth_output, PLINTH_BUDGET_LABEL)
+        .expect("Plinth benchmark ExUnits should be present in cabal test output");
+    println!("plinth_benchmark: Axiom SHPLONK proof verification in Plutus");
+    println!("plinth_mem: {mem}");
+    println!("plinth_cpu: {cpu}");
+    println!("plinth_test_time: {}", fmt_duration(plinth_time));
     println!("total_time: {}", fmt_duration(total_start.elapsed()));
 }
 
@@ -339,6 +352,44 @@ fn parse_metric(text: &str, label: &str) -> Option<String> {
         .take_while(|char| char.is_ascii_digit() || *char == '_')
         .collect();
     (!value.is_empty()).then_some(value)
+}
+
+fn run_plinth_benchmark() -> String {
+    let ghc_version =
+        env::var("PLINTH_GHC_VERSION").unwrap_or_else(|_| PLINTH_BENCHMARK_GHC_VERSION.to_string());
+    let output = Command::new("ghcup")
+        .arg("run")
+        .arg("--ghc")
+        .arg(&ghc_version)
+        .arg("--")
+        .arg("cabal")
+        .arg("test")
+        .arg("run-vector-test")
+        .arg("--test-show-details=direct")
+        .current_dir("plinth-verifier")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Plinth benchmark command should start");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        print!("{stdout}");
+        eprint!("{stderr}");
+    } else if !stderr.trim().is_empty() {
+        eprint!("{stderr}");
+    }
+    assert!(output.status.success(), "Plinth benchmark should pass");
+    stdout.into_owned()
+}
+
+fn parse_plinth_budget(output: &str, label: &str) -> Option<(String, String)> {
+    let line = output.lines().find(|line| line.contains(label))?;
+    let mem = parse_metric(line, "ExMemory")?;
+    let cpu = parse_metric(line, "ExCPU")?;
+    Some((mem, cpu))
 }
 
 fn fmt_duration(duration: Duration) -> String {

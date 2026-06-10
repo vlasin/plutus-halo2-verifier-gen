@@ -8,12 +8,6 @@ module Generic.VerifyCompiled (
 
 import PlutusTx (
     CompiledCode,
-    CompiledCodeIn,
- )
-import qualified PlutusTx
-import UntypedPlutusCore (
-    DefaultFun,
-    DefaultUni,
  )
 import Prelude (
     IO,
@@ -26,10 +20,7 @@ verifyAppliedCompiled =
     error "Axiom SHPLONK generation uses Generic.VerificationTestPlutus directly"
 
 proofMintingPolicyContractApplied ::
-    CompiledCodeIn
-        DefaultUni
-        DefaultFun
-        PlutusTx.BuiltinUnit
+    CompiledCode ()
 proofMintingPolicyContractApplied =
     error "Axiom SHPLONK generation uses Generic.VerificationTestPlutus directly"
 

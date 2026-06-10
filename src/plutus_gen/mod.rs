@@ -20,7 +20,7 @@ pub use extraction::{CircuitRepresentation, extract_circuit};
 pub(crate) mod proof_serialization;
 pub use proof_serialization::{export_proof, export_public_inputs, serialize_proof};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use std::path::Path;
 
 use blstrs::{Bls12, G1Projective, Scalar};
@@ -54,7 +54,6 @@ where
         PCSType::Halo2MultiOpen => {
             Path::new("plinth-verifier/templates/verification_halo2_kzg.hbs")
         }
-        PCSType::AxiomSHPLONK => bail!("Axiom SHPLONK Plinth verifier is not implemented"),
     };
 
     let vk_template_file = Path::new("plinth-verifier/templates/vk_constants.hbs");
@@ -117,7 +116,6 @@ where
     let verifier_template_file = match PCS::pcs_type() {
         PCSType::GWC19 => Path::new("aiken-verifier/templates/verification_gwc19.hbs"),
         PCSType::Halo2MultiOpen => Path::new("aiken-verifier/templates/verification_h2.hbs"),
-        PCSType::AxiomSHPLONK => bail!("Axiom SHPLONK Aiken verifier is not implemented"),
     };
     let verifier_file = Path::new("aiken-verifier/aiken_halo2/lib/proof_verifier.ak");
     let profiler_template_file = Path::new("aiken-verifier/templates/profiler.hbs");

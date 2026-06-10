@@ -3,6 +3,12 @@
 //! This module emits generated verifier files into the same ignored output
 //! locations as the existing IOG-Halo2 generator. The source of truth is the
 //! Axiom proving artifacts: parameters, verifying key, and proof bytes.
+//!
+//! Supported scope is intentionally narrow. The generator currently targets
+//! Axiom Halo2 proofs over BLS12-381 KZG with SHPLONK openings and no public
+//! instance columns, no circuit-defined challenges, and only first-phase advice
+//! columns. Unsupported layouts fail during verification-key extraction instead
+//! of emitting partial verifier code.
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use halo2_axiom::{
@@ -17,7 +23,7 @@ use halo2_axiom::{
 use handlebars::Handlebars;
 use std::{
     collections::{BTreeSet, HashMap},
-    fs::File,
+    fs::{self, File},
     path::{Path, PathBuf},
 };
 
@@ -28,6 +34,10 @@ const DEFAULT_AIKEN_VK_OUTPUT: &str = "aiken-verifier/aiken_halo2/lib/verifier_k
 const DEFAULT_PLINTH_TEMPLATE: &str = "plinth-verifier/templates/axiom_shplonk.hbs";
 const DEFAULT_PLINTH_OUTPUT: &str =
     "plinth-verifier/plutus-halo2/src/Plutus/Crypto/Halo2/Generic/Verifier.hs";
+const DEFAULT_PLINTH_VK_STUB_TEMPLATE: &str =
+    "plinth-verifier/templates/axiom_vk_constants_stub.hbs";
+const DEFAULT_PLINTH_VK_STUB_OUTPUT: &str =
+    "plinth-verifier/plutus-halo2/src/Plutus/Crypto/Halo2/Generic/VKConstants.hs";
 const DEFAULT_PLINTH_TEST_TEMPLATE: &str = "plinth-verifier/templates/axiom_proof_test.hbs";
 const DEFAULT_PLINTH_TEST_OUTPUT: &str =
     "plinth-verifier/plutus-halo2/test/Generic/VerificationTestPlutus.hs";
@@ -42,6 +52,10 @@ const DEFAULT_PLINTH_COMPILED_STUB_TEMPLATE: &str =
     "plinth-verifier/templates/axiom_verify_compiled_stub.hbs";
 const DEFAULT_PLINTH_COMPILED_STUB_OUTPUT: &str =
     "plinth-verifier/plutus-halo2/test/Generic/VerifyCompiled.hs";
+const DEFAULT_PLINTH_PROOF_JSON_OUTPUT: &str =
+    "plinth-verifier/plutus-halo2/test/Generic/serialized_proof.json";
+const DEFAULT_PLINTH_PUBLIC_INPUT_OUTPUT: &str =
+    "plinth-verifier/plutus-halo2/test/Generic/serialized_public_input.hex";
 
 /// Output locations used by the Axiom SHPLONK generator.
 #[derive(Clone, Debug)]
@@ -52,6 +66,8 @@ pub struct AxiomShplonkOutputPaths {
     pub aiken_vk_output: PathBuf,
     pub plinth_template: PathBuf,
     pub plinth_output: PathBuf,
+    pub plinth_vk_stub_template: PathBuf,
+    pub plinth_vk_stub_output: PathBuf,
     pub plinth_test_template: PathBuf,
     pub plinth_test_output: PathBuf,
     pub plinth_test_main_template: PathBuf,
@@ -60,6 +76,8 @@ pub struct AxiomShplonkOutputPaths {
     pub plinth_haskell_test_output: PathBuf,
     pub plinth_compiled_stub_template: PathBuf,
     pub plinth_compiled_stub_output: PathBuf,
+    pub plinth_proof_json_output: PathBuf,
+    pub plinth_public_input_output: PathBuf,
 }
 
 impl Default for AxiomShplonkOutputPaths {
@@ -71,6 +89,8 @@ impl Default for AxiomShplonkOutputPaths {
             aiken_vk_output: DEFAULT_AIKEN_VK_OUTPUT.into(),
             plinth_template: DEFAULT_PLINTH_TEMPLATE.into(),
             plinth_output: DEFAULT_PLINTH_OUTPUT.into(),
+            plinth_vk_stub_template: DEFAULT_PLINTH_VK_STUB_TEMPLATE.into(),
+            plinth_vk_stub_output: DEFAULT_PLINTH_VK_STUB_OUTPUT.into(),
             plinth_test_template: DEFAULT_PLINTH_TEST_TEMPLATE.into(),
             plinth_test_output: DEFAULT_PLINTH_TEST_OUTPUT.into(),
             plinth_test_main_template: DEFAULT_PLINTH_TEST_MAIN_TEMPLATE.into(),
@@ -79,11 +99,22 @@ impl Default for AxiomShplonkOutputPaths {
             plinth_haskell_test_output: DEFAULT_PLINTH_HASKELL_TEST_OUTPUT.into(),
             plinth_compiled_stub_template: DEFAULT_PLINTH_COMPILED_STUB_TEMPLATE.into(),
             plinth_compiled_stub_output: DEFAULT_PLINTH_COMPILED_STUB_OUTPUT.into(),
+            plinth_proof_json_output: DEFAULT_PLINTH_PROOF_JSON_OUTPUT.into(),
+            plinth_public_input_output: DEFAULT_PLINTH_PUBLIC_INPUT_OUTPUT.into(),
         }
     }
 }
 
 /// Generate both Aiken and Plinth verifier sources from Axiom proving artifacts.
+///
+/// Current limitations:
+/// - no public instance columns,
+/// - no circuit-defined challenges,
+/// - no multi-phase advice columns,
+/// - Axiom BLS12-381 KZG SHPLONK only.
+///
+/// Unsupported verification-key layouts return an error before any verifier is
+/// emitted.
 pub fn generate_axiom_shplonk_verifiers_from_vk(
     params: &ParamsKZG<Bls12>,
     vk: &VerifyingKey<G1Affine>,
@@ -99,6 +130,8 @@ pub fn generate_axiom_shplonk_verifiers_from_vk(
 
 /// Generate both Aiken and Plinth verifier sources from Axiom proving artifacts
 /// into caller-provided output paths.
+///
+/// Has the same supported scope as [`generate_axiom_shplonk_verifiers_from_vk`].
 pub fn generate_axiom_shplonk_verifiers_from_vk_with_paths(
     params: &ParamsKZG<Bls12>,
     vk: &VerifyingKey<G1Affine>,
@@ -111,6 +144,8 @@ pub fn generate_axiom_shplonk_verifiers_from_vk_with_paths(
 
 /// Generate both Aiken and Plinth verifier sources from an Axiom circuit and
 /// proof bytes.
+///
+/// Has the same supported scope as [`generate_axiom_shplonk_verifiers_from_vk`].
 pub fn generate_axiom_shplonk_verifiers_from_circuit<ConcreteCircuit>(
     params: &ParamsKZG<Bls12>,
     circuit: &ConcreteCircuit,
@@ -129,6 +164,8 @@ where
 
 /// Generate both Aiken and Plinth verifier sources from an Axiom circuit and
 /// proof bytes into caller-provided output paths.
+///
+/// Has the same supported scope as [`generate_axiom_shplonk_verifiers_from_vk`].
 pub fn generate_axiom_shplonk_verifiers_from_circuit_with_paths<ConcreteCircuit>(
     params: &ParamsKZG<Bls12>,
     circuit: &ConcreteCircuit,
@@ -153,6 +190,12 @@ fn render_axiom_shplonk_verifiers(
         .context("failed to render Axiom SHPLONK Aiken verifier key stub")?;
     render_template(&paths.plinth_template, &paths.plinth_output, data)
         .context("failed to render Axiom SHPLONK Plinth verifier")?;
+    render_template(
+        &paths.plinth_vk_stub_template,
+        &paths.plinth_vk_stub_output,
+        data,
+    )
+    .context("failed to render Axiom SHPLONK Plinth verifier key stub")?;
     render_template(&paths.plinth_test_template, &paths.plinth_test_output, data)
         .context("failed to render Axiom SHPLONK Plinth benchmark test")?;
     render_template(
@@ -173,15 +216,26 @@ fn render_axiom_shplonk_verifiers(
         data,
     )
     .context("failed to render Axiom SHPLONK compiled verifier stub")?;
+    write_generated_file(
+        &paths.plinth_proof_json_output,
+        data.get("PROOF_JSON")
+            .context("missing rendered proof JSON data")?,
+    )?;
+    write_generated_file(&paths.plinth_public_input_output, "")?;
 
     Ok(())
+}
+
+fn write_generated_file(output_path: &Path, contents: &str) -> Result<()> {
+    fs::write(output_path, contents)
+        .with_context(|| format!("failed to write generated file {}", output_path.display()))
 }
 
 fn render_template(
     template_path: &Path,
     output_path: &Path,
     data: &HashMap<String, String>,
-) -> Result<String> {
+) -> Result<()> {
     let mut handlebars = Handlebars::new();
     handlebars.set_strict_mode(true);
     handlebars
@@ -191,10 +245,7 @@ fn render_template(
         .with_context(|| format!("failed to create generated file {}", output_path.display()))?;
     handlebars
         .render_to_write("template", data, &mut output)
-        .with_context(|| format!("failed to render {}", output_path.display()))?;
-    handlebars
-        .render("template", data)
-        .context("failed to render template to string")
+        .with_context(|| format!("failed to render {}", output_path.display()))
 }
 
 struct AxiomShplonkRenderData {
@@ -249,6 +300,10 @@ impl AxiomShplonkRenderData {
             reverse_hex_bytes(&g2_hex(params.s_g2()))?,
         );
         data.insert("PROOF_HEX".to_string(), hex::encode(proof));
+        data.insert(
+            "PROOF_JSON".to_string(),
+            serde_json::to_string(proof).context("failed to serialize proof as JSON")?,
+        );
         data.insert(
             "AIKEN_FIXED_COMMITMENTS".to_string(),
             aiken_fixed_commitments(&fixed_commitments),
@@ -629,7 +684,7 @@ impl AxiomLayout {
             format!(
                 "            [{}]",
                 (-(self.blinding_factors as i32 + 1)..=0)
-                    .map(|rotation| format!("rotateOmega one {rotation}"))
+                    .map(|rotation| format!("rotateOmega one ({rotation})"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -934,7 +989,7 @@ impl AxiomLayout {
                 "        (!msm{idx}, !r{idx}) =\n            rotationContribution\n                {}\n                {}\n                (u pieces)\n                (shplonkY pieces)\n                {}\n                ({})",
                 plinth_rotation_list(&set.points),
                 self.plinth_openings_list(set),
-                plinth_power("v pieces", idx),
+                parenthesize(&plinth_power("v pieces", idx)),
                 z_diff
             ));
         }
@@ -1576,7 +1631,7 @@ fn plinth_rotation_binding(rotation: i32) -> String {
         "        !xCurrent = x pieces".to_string()
     } else {
         format!(
-            "        !{} = rotateOmega (x pieces) {rotation}",
+            "        !{} = rotateOmega (x pieces) ({rotation})",
             rotation_var(rotation, NameStyle::Plinth)
         )
     }
@@ -1729,11 +1784,11 @@ fn aiken_delta_term(exponent: usize) -> String {
 }
 
 fn plinth_delta_term(exponent: usize) -> String {
-    let beta_x = "beta pieces * x pieces";
+    let beta_x = "(beta pieces) * (x pieces)";
     match exponent {
         0 => beta_x.to_string(),
         1 => format!("{beta_x} * scalarDelta"),
-        _ => format!("{beta_x} * powMod scalarDelta {exponent}"),
+        _ => format!("{beta_x} * (powMod scalarDelta {exponent})"),
     }
 }
 
@@ -1749,8 +1804,12 @@ fn plinth_xn_power(exponent: usize) -> String {
     match exponent {
         0 => "scalarOne".to_string(),
         1 => "xn".to_string(),
-        _ => format!("powMod xn {exponent}"),
+        _ => format!("(powMod xn {exponent})"),
     }
+}
+
+fn parenthesize(expression: &str) -> String {
+    format!("({expression})")
 }
 
 fn aiken_field_access(name: &Name) -> String {
@@ -1758,7 +1817,7 @@ fn aiken_field_access(name: &Name) -> String {
 }
 
 fn plinth_field_access(name: &Name) -> String {
-    format!("{} pieces", name.plinth())
+    format!("({} pieces)", name.plinth())
 }
 
 fn aiken_scalar_literal(scalar: BlsFr) -> String {

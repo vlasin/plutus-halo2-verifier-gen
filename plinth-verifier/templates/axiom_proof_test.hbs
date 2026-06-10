@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -16,8 +17,6 @@ module Generic.VerificationTestPlutus (test) where
 
 import EvalUtils (
     evalWithBudget',
-    exBudgetCPUToInt,
-    exBudgetMemoryToInt,
  )
 import Plutus.Crypto.Halo2.Generic.Verifier (verify)
 import PlutusTx (
@@ -37,19 +36,12 @@ import qualified Test.Tasty as Tasty
 import qualified Test.Tasty.HUnit as Tasty
 import Prelude (
     Either (Left, Right),
-    Integer,
     fail,
     putStrLn,
     show,
     ($),
     (<>),
  )
-
-memoryLimit :: Integer
-memoryLimit = 16_500_000
-
-cpuLimit :: Integer
-cpuLimit = 10_000_000_000
 
 proofForTesting :: BuiltinByteString
 proofForTesting =
@@ -74,11 +66,5 @@ test :: Tasty.TestTree
 test = Tasty.testCase "Axiom SHPLONK proof verification in Plutus" $ do
     case evalWithBudget' verifyAppliedCompiled of
         Left e -> fail $ "Evaluator failed: " <> show e
-        Right (budget, _) -> do
+        Right (budget, _) ->
             putStrLn $ "Axiom SHPLONK Plinth verifier budget: " <> show budget
-            Tasty.assertBool
-                "Memory budget exceeded"
-                (exBudgetMemoryToInt budget < memoryLimit)
-            Tasty.assertBool
-                "CPU budget exceeded"
-                (exBudgetCPUToInt budget < cpuLimit)

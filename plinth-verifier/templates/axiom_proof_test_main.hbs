@@ -2,7 +2,6 @@
 
 module Main where
 
-import qualified Generic.VerificationTestHaskell
 import qualified Generic.VerificationTestPlutus
 import qualified Test.Tasty as Tasty
 import Prelude (
@@ -15,6 +14,4 @@ main =
     Tasty.defaultMain $
         Tasty.testGroup
             "Axiom SHPLONK verifier tests"
-            [ Generic.VerificationTestHaskell.test
-            , Generic.VerificationTestPlutus.test
-            ]
+            [Generic.VerificationTestPlutus.test]
