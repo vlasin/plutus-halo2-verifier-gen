@@ -21,6 +21,6 @@ proofForTesting =
         "{{PROOF_HEX}}"
 
 test :: Tasty.TestTree
-test = Tasty.testCase "Axiom scalar-mul proof verification in Haskell" $ do
+test = Tasty.testCase "Axiom SHPLONK proof verification in Haskell" $ do
     let (result, _) = verify proofForTesting
     Tasty.assertBool "proof verification failed" result

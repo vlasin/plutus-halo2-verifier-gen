@@ -1,0 +1,317 @@
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
+
+module Plutus.Crypto.Halo2.Generic.Verifier (verify) where
+
+import GHC.ByteOrder (ByteOrder (LittleEndian))
+import qualified Plutus.Crypto.BlsUtils as BlsUtils
+import Plutus.Crypto.BlsTypes (
+    Scalar,
+    bls12_381_field_prime,
+    mkScalar,
+    powMod,
+    recip,
+    reverseByteString,
+    unScalar,
+ )
+import Plutus.Crypto.Halo2.Proof (
+    Proof,
+    readByteString,
+ )
+import Plutus.Crypto.Halo2.LagrangePolynomialEvaluation (
+    lagrangePolynomialBasis,
+ )
+import PlutusTx.Builtins (
+    BuiltinBLS12_381_G1_Element,
+    BuiltinBLS12_381_G2_Element,
+    BuiltinByteString,
+    blake2b_256,
+    bls12_381_G1_add,
+    bls12_381_G1_compressed_zero,
+    bls12_381_G1_scalarMul,
+    bls12_381_G1_uncompress,
+    bls12_381_G2_compressed_generator,
+    bls12_381_G2_uncompress,
+    bls12_381_finalVerify,
+    bls12_381_millerLoop,
+    byteStringToInteger,
+    consByteString,
+    emptyByteString,
+    integerToByteString,
+ )
+import PlutusTx.Builtins.HasOpaque (
+    stringToBuiltinByteStringHex,
+ )
+import PlutusTx.List (
+    foldl,
+    head,
+    map,
+    reverse,
+    tail,
+    zip,
+    (!!),
+ )
+import PlutusTx.Prelude (
+    AdditiveGroup ((-)),
+    AdditiveSemigroup ((+)),
+    Bool,
+    Eq ((==)),
+    Integer,
+    MultiplicativeMonoid (one),
+    MultiplicativeSemigroup ((*)),
+    negate,
+    modulo,
+    ($),
+    (<>),
+ )
+
+type RawPoint = BuiltinByteString
+type Transcript = BuiltinByteString
+type ParserState = (Proof, Transcript)
+
+data RawMSMElement = RawMSMElement Scalar RawPoint
+data RawMSM = RawMSM [RawMSMElement]
+data Opening = Opening RawMSM [Scalar]
+
+data ProofPieces = ProofPieces
+    { {{{PLINTH_PROOF_FIELDS}}}
+    }
+
+n :: Integer
+n = {{{N}}}
+
+blindingFactors :: Integer
+blindingFactors = {{{BLINDING_FACTORS}}}
+
+scalarZero :: Scalar
+scalarZero = mkScalar 0
+
+scalarOne :: Scalar
+scalarOne = mkScalar 1
+
+scalarDelta :: Scalar
+scalarDelta =
+    mkScalar
+        (0x08634d0aa021aaf843cab354fabb0062f6502437c6a09c006c083479590189d7 `modulo` bls12_381_field_prime)
+
+g1GeneratorBytes :: RawPoint
+g1GeneratorBytes =
+    stringToBuiltinByteStringHex
+        "bbc622db0af03afbef1a7af93fe8556c58ac1b173f3a4ea105b974974f8c68c30faca94f8c63952694d79731a7d3f197"
+
+transcriptRep :: Scalar
+transcriptRep = scalarFromLittleEndianHex (stringToBuiltinByteStringHex "{{TRANSCRIPT_REP}}")
+
+omega :: Scalar
+omega = scalarFromLittleEndianHex (stringToBuiltinByteStringHex "{{OMEGA}}")
+
+omegaInv :: Scalar
+omegaInv = scalarFromLittleEndianHex (stringToBuiltinByteStringHex "{{OMEGA_INV}}")
+
+barycentricWeight :: Scalar
+barycentricWeight = scalarFromLittleEndianHex (stringToBuiltinByteStringHex "{{BARYCENTRIC_WEIGHT}}")
+
+sG2 :: BuiltinBLS12_381_G2_Element
+sG2 =
+    bls12_381_G2_uncompress $
+        stringToBuiltinByteStringHex "{{S_G2_CARDANO}}"
+
+{{{PLINTH_FIXED_COMMITMENTS}}}
+
+{{{PLINTH_PERMUTATION_COMMITMENTS}}}
+
+prefixChallenge :: BuiltinByteString
+prefixChallenge = consByteString 0 emptyByteString
+
+prefixCommon :: BuiltinByteString
+prefixCommon = consByteString 1 emptyByteString
+
+scalarR :: Scalar
+scalarR =
+    mkScalar
+        (0x1824b159acc5056f998c4fefecbc4ff55884b7fa0003480200000001fffffffe `modulo` bls12_381_field_prime)
+
+{-# INLINEABLE verify #-}
+verify :: Proof -> (Bool, [(BuiltinByteString, BlsUtils.Tracing)])
+verify proof =
+    let !pieces = parseProof proof
+        !expectedH = expectedHEval pieces
+        !ok = shplonkPairingCheck pieces expectedH
+     in (ok, [])
+
+{-# INLINEABLE scalarFromLittleEndianHex #-}
+scalarFromLittleEndianHex :: BuiltinByteString -> Scalar
+scalarFromLittleEndianHex bytes =
+    mkScalar (byteStringToInteger LittleEndian bytes `modulo` bls12_381_field_prime)
+
+{-# INLINEABLE scalarToLittleEndianBytes #-}
+scalarToLittleEndianBytes :: Scalar -> BuiltinByteString
+scalarToLittleEndianBytes scalar =
+    integerToByteString LittleEndian 32 (unScalar scalar)
+
+{-# INLINEABLE commonScalar #-}
+commonScalar :: Scalar -> Transcript -> Transcript
+commonScalar scalar transcript =
+    transcript <> prefixCommon <> scalarToLittleEndianBytes scalar
+
+{-# INLINEABLE readRawPoint #-}
+readRawPoint :: ParserState -> (RawPoint, ParserState)
+readRawPoint (!proof, !transcript) =
+    let (!bytes, !proof') = readByteString 48 proof
+     in (bytes, (proof', transcript <> prefixCommon <> bytes))
+
+{-# INLINEABLE readScalar #-}
+readScalar :: ParserState -> (Scalar, ParserState)
+readScalar (!proof, !transcript) =
+    let (!bytes, !proof') = readByteString 32 proof
+        !scalar = scalarFromLittleEndianHex bytes
+     in (scalar, (proof', transcript <> prefixCommon <> bytes))
+
+{-# INLINEABLE squeezeChallenge #-}
+squeezeChallenge :: ParserState -> (Scalar, ParserState)
+squeezeChallenge (!proof, !transcript) =
+    let !challengeInput = transcript <> prefixChallenge
+        !hash = blake2b_256 challengeInput
+        !rehash = blake2b_256 hash
+        !scalar =
+            scalarFromLittleEndianHex hash
+                + (scalarR * scalarFromLittleEndianHex rehash)
+     in (scalar, (proof, challengeInput))
+
+{-# INLINEABLE parseProof #-}
+parseProof :: Proof -> ProofPieces
+parseProof proof =
+{{{PLINTH_PARSE_PROOF}}}
+
+{-# INLINEABLE expectedHEval #-}
+expectedHEval :: ProofPieces -> Scalar
+expectedHEval pieces =
+{{{PLINTH_EXPECTED_H_EVAL}}}
+
+{-# INLINEABLE shplonkPairingCheck #-}
+shplonkPairingCheck :: ProofPieces -> Scalar -> Bool
+shplonkPairingCheck pieces expectedH =
+{{{PLINTH_SHPLONK_PAIRING_CHECK}}}
+
+{-# INLINEABLE rotationContribution #-}
+rotationContribution ::
+    [Scalar] ->
+    [Opening] ->
+    Scalar ->
+    Scalar ->
+    Scalar ->
+    Scalar ->
+    (RawMSM, Scalar)
+rotationContribution points openings u' y vPower zDiff =
+    let !basis = lagrangeBasisAt points u'
+        !factor = vPower * zDiff
+        (!innerMsm, !rInner) =
+            rotationContributionGo openings basis y factor scalarOne (RawMSM []) scalarZero
+     in (innerMsm, factor * rInner)
+
+{-# INLINEABLE rotationContributionGo #-}
+rotationContributionGo ::
+    [Opening] ->
+    [Scalar] ->
+    Scalar ->
+    Scalar ->
+    Scalar ->
+    RawMSM ->
+    Scalar ->
+    (RawMSM, Scalar)
+rotationContributionGo [] _ _ _ _ msmAcc rAcc = (msmAcc, rAcc)
+rotationContributionGo (Opening openingMsm evals : rest) basis y factor yPower msmAcc rAcc =
+    let !rEval = weightedSum evals basis
+     in rotationContributionGo
+            rest
+            basis
+            y
+            factor
+            (yPower * y)
+            (addScaledRawMsm msmAcc (factor * yPower) openingMsm)
+            (rAcc + yPower * rEval)
+
+{-# INLINEABLE addRawMsm #-}
+addRawMsm :: RawMSM -> RawMSM -> RawMSM
+addRawMsm (RawMSM a) (RawMSM b) = RawMSM (a <> b)
+
+{-# INLINEABLE addScaledRawMsm #-}
+addScaledRawMsm :: RawMSM -> Scalar -> RawMSM -> RawMSM
+addScaledRawMsm (RawMSM acc) scalar (RawMSM elements) =
+    RawMSM (foldl (\accum (RawMSMElement s p) -> RawMSMElement (scalar * s) p : accum) acc elements)
+
+{-# INLINEABLE lagrangeBasisAt #-}
+lagrangeBasisAt :: [Scalar] -> Scalar -> [Scalar]
+lagrangeBasisAt [] _ = []
+lagrangeBasisAt [_] _ = [scalarOne]
+lagrangeBasisAt points xEval =
+    let !basisData =
+            map
+                ( \xi ->
+                    foldl
+                        ( \(num, denom) xj ->
+                            if xj == xi
+                                then (num, denom)
+                                else (num * (xEval - xj), denom * (xi - xj))
+                        )
+                        (scalarOne, scalarOne)
+                        points
+                )
+                points
+        !invertedDenominators = batchInverses (map (\(_, denom) -> denom) basisData)
+     in map (\((num, _), denomInv) -> num * denomInv) (zip basisData invertedDenominators)
+
+{-# INLINEABLE batchInverses #-}
+batchInverses :: [Scalar] -> [Scalar]
+batchInverses [] = []
+batchInverses (a : aCons) =
+    let !bRev = foldl (\accum elem -> elem * head accum : accum) [a] aCons
+        !aRev = reverse (a : aCons)
+        !bInvLast = recip (head bRev)
+        (!aInvAccum, !bInv1) =
+            foldl
+                ( \(aInv, bInvI) (bIMin1, aI) ->
+                    (bInvI * bIMin1 : aInv, bInvI * aI)
+                )
+                ([], bInvLast)
+                (zip (tail bRev) aRev)
+     in bInv1 : aInvAccum
+
+{-# INLINEABLE weightedSum #-}
+weightedSum :: [Scalar] -> [Scalar] -> Scalar
+weightedSum [eval] _ = eval
+weightedSum evals basis =
+    foldl (\acc (eval, basisEval) -> acc + eval * basisEval) scalarZero (zip evals basis)
+
+{-# INLINEABLE pointOpening #-}
+pointOpening :: RawPoint -> [Scalar] -> Opening
+pointOpening point evals = Opening (pointMsm point) evals
+
+{-# INLINEABLE pointMsm #-}
+pointMsm :: RawPoint -> RawMSM
+pointMsm point = RawMSM [RawMSMElement scalarOne point]
+
+{-# INLINEABLE vanishingHMsm #-}
+vanishingHMsm :: ProofPieces -> Scalar -> RawMSM
+vanishingHMsm pieces xn =
+{{{PLINTH_VANISHING_H_MSM}}}
+
+{-# INLINEABLE vanishing #-}
+vanishing :: [Scalar] -> Scalar -> Scalar
+vanishing points u' = foldl (\acc point -> acc * (u' - point)) scalarOne points
+
+{-# INLINEABLE evalAxiomMsm #-}
+evalAxiomMsm :: RawMSM -> BuiltinBLS12_381_G1_Element
+evalAxiomMsm (RawMSM elements) =
+    foldl
+        ( \acc (RawMSMElement scalar point) ->
+            bls12_381_G1_add acc (bls12_381_G1_scalarMul (unScalar scalar) (axiomDecompressG1 point))
+        )
+        (bls12_381_G1_uncompress bls12_381_G1_compressed_zero)
+        elements
+
+{-# INLINEABLE axiomDecompressG1 #-}
+axiomDecompressG1 :: RawPoint -> BuiltinBLS12_381_G1_Element
+axiomDecompressG1 bytes = bls12_381_G1_uncompress (reverseByteString bytes)

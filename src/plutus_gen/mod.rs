@@ -2,10 +2,11 @@
 //! the correct mustashe templates and emitting them to the correct locations.
 pub(crate) mod adjusted_types;
 pub use adjusted_types::CardanoFriendlyBlake2b;
-pub mod axiom_scalar_mul;
-pub use axiom_scalar_mul::{
-    AxiomScalarMulFixture, AxiomScalarMulOutputPaths, generate_axiom_scalar_mul_verifiers,
-    generate_axiom_scalar_mul_verifiers_with_paths,
+pub mod axiom_shplonk;
+pub use axiom_shplonk::{
+    AxiomShplonkOutputPaths, generate_axiom_shplonk_verifiers_from_circuit,
+    generate_axiom_shplonk_verifiers_from_circuit_with_paths,
+    generate_axiom_shplonk_verifiers_from_vk, generate_axiom_shplonk_verifiers_from_vk_with_paths,
 };
 pub(crate) mod emitters;
 pub(crate) mod extraction;

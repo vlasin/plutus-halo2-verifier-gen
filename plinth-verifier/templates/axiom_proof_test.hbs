@@ -71,11 +71,11 @@ verifyAppliedCompiled =
     verifyCompiled `unsafeApplyCode` liftCodeDef proofForTesting
 
 test :: Tasty.TestTree
-test = Tasty.testCase "Axiom scalar-mul proof verification in Plutus" $ do
+test = Tasty.testCase "Axiom SHPLONK proof verification in Plutus" $ do
     case evalWithBudget' verifyAppliedCompiled of
         Left e -> fail $ "Evaluator failed: " <> show e
         Right (budget, _) -> do
-            putStrLn $ "Axiom scalar-mul Plinth verifier budget: " <> show budget
+            putStrLn $ "Axiom SHPLONK Plinth verifier budget: " <> show budget
             Tasty.assertBool
                 "Memory budget exceeded"
                 (exBudgetMemoryToInt budget < memoryLimit)

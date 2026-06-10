@@ -14,7 +14,7 @@ main :: IO ()
 main =
     Tasty.defaultMain $
         Tasty.testGroup
-            "Axiom scalar-mul verifier tests"
+            "Axiom SHPLONK verifier tests"
             [ Generic.VerificationTestHaskell.test
             , Generic.VerificationTestPlutus.test
             ]
