@@ -5,14 +5,14 @@
 //! truth is either live Axiom proving artifacts or an exported Axiom verifier
 //! fixture, plus the templates tracked in this repo.
 
-use anyhow::{Context as _, Result, bail, ensure};
+use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use halo2_axiom::{
     halo2curves::{
         bls12_381::{Bls12, Fr as BlsFr, G1Affine, G2Affine},
         ff::PrimeField as _,
         group::GroupEncoding as _,
     },
-    plonk::{Any, Expression, VerifyingKey},
+    plonk::{Any, Circuit, Expression, VerifyingKey, keygen_vk},
     poly::kzg::commitment::ParamsKZG,
 };
 use handlebars::Handlebars;
@@ -192,6 +192,44 @@ pub fn generate_axiom_scalar_mul_verifiers_from_vk_with_paths(
 ) -> Result<()> {
     let fixture = AxiomScalarMulFixture::from_vk_and_proof(params, vk, proof)?;
     generate_axiom_scalar_mul_verifiers_from_fixture(&fixture, paths)
+}
+
+/// Generate both Aiken and Plinth verifier sources from an Axiom circuit and
+/// proof bytes.
+///
+/// This convenience entry point derives the `VerifyingKey` from the provided
+/// circuit, then validates that it matches the supported scalar-mul verifier
+/// template.
+pub fn generate_axiom_scalar_mul_verifiers_from_circuit<ConcreteCircuit>(
+    params: &ParamsKZG<Bls12>,
+    circuit: &ConcreteCircuit,
+    proof: &[u8],
+) -> Result<()>
+where
+    ConcreteCircuit: Circuit<BlsFr>,
+{
+    generate_axiom_scalar_mul_verifiers_from_circuit_with_paths(
+        params,
+        circuit,
+        proof,
+        &AxiomScalarMulOutputPaths::default(),
+    )
+}
+
+/// Generate both Aiken and Plinth verifier sources from an Axiom circuit and
+/// proof bytes into caller-provided output paths.
+pub fn generate_axiom_scalar_mul_verifiers_from_circuit_with_paths<ConcreteCircuit>(
+    params: &ParamsKZG<Bls12>,
+    circuit: &ConcreteCircuit,
+    proof: &[u8],
+    paths: &AxiomScalarMulOutputPaths,
+) -> Result<()>
+where
+    ConcreteCircuit: Circuit<BlsFr>,
+{
+    let vk = keygen_vk::<G1Affine, _, _>(params, circuit)
+        .map_err(|err| anyhow!("failed to generate Axiom scalar-mul verifying key: {err:?}"))?;
+    generate_axiom_scalar_mul_verifiers_from_vk_with_paths(params, &vk, proof, paths)
 }
 
 fn generate_axiom_scalar_mul_verifiers_from_fixture(
