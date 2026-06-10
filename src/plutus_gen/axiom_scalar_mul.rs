@@ -2,9 +2,19 @@
 //!
 //! This module intentionally emits generated verifier files into the same
 //! ignored output locations as the existing IOG-Halo2 generator. The source of
-//! truth is the Axiom verifier fixture plus the templates tracked in this repo.
+//! truth is either live Axiom proving artifacts or an exported Axiom verifier
+//! fixture, plus the templates tracked in this repo.
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result, bail, ensure};
+use halo2_axiom::{
+    halo2curves::{
+        bls12_381::{Bls12, Fr as BlsFr, G1Affine, G2Affine},
+        ff::PrimeField as _,
+        group::GroupEncoding as _,
+    },
+    plonk::{Any, Expression, VerifyingKey},
+    poly::kzg::commitment::ParamsKZG,
+};
 use handlebars::Handlebars;
 use serde::Deserialize;
 use std::{
@@ -150,6 +160,44 @@ pub fn generate_axiom_scalar_mul_verifiers_with_paths(
     paths: &AxiomScalarMulOutputPaths,
 ) -> Result<()> {
     let fixture = read_fixture(fixture_path)?;
+    generate_axiom_scalar_mul_verifiers_from_fixture(&fixture, paths)
+}
+
+/// Generate both Aiken and Plinth verifier sources directly from Axiom
+/// proving artifacts.
+///
+/// The emitted verifier is still the scalar-mul verifier template. The
+/// `VerifyingKey` is used to derive and validate that the circuit shape matches
+/// the supported scalar-mul layout.
+pub fn generate_axiom_scalar_mul_verifiers_from_vk(
+    params: &ParamsKZG<Bls12>,
+    vk: &VerifyingKey<G1Affine>,
+    proof: &[u8],
+) -> Result<()> {
+    generate_axiom_scalar_mul_verifiers_from_vk_with_paths(
+        params,
+        vk,
+        proof,
+        &AxiomScalarMulOutputPaths::default(),
+    )
+}
+
+/// Generate both Aiken and Plinth verifier sources directly from Axiom
+/// proving artifacts into caller-provided output paths.
+pub fn generate_axiom_scalar_mul_verifiers_from_vk_with_paths(
+    params: &ParamsKZG<Bls12>,
+    vk: &VerifyingKey<G1Affine>,
+    proof: &[u8],
+    paths: &AxiomScalarMulOutputPaths,
+) -> Result<()> {
+    let fixture = AxiomScalarMulFixture::from_vk_and_proof(params, vk, proof)?;
+    generate_axiom_scalar_mul_verifiers_from_fixture(&fixture, paths)
+}
+
+fn generate_axiom_scalar_mul_verifiers_from_fixture(
+    fixture: &AxiomScalarMulFixture,
+    paths: &AxiomScalarMulOutputPaths,
+) -> Result<()> {
     fixture.validate()?;
     let data = fixture.template_data()?;
 
@@ -215,6 +263,46 @@ fn render_template(
 }
 
 impl AxiomScalarMulFixture {
+    /// Build the scalar-mul verifier input from live Axiom proving artifacts.
+    pub fn from_vk_and_proof(
+        params: &ParamsKZG<Bls12>,
+        vk: &VerifyingKey<G1Affine>,
+        proof: &[u8],
+    ) -> Result<Self> {
+        let domain = vk.get_domain();
+        let n = domain.get_n();
+        let barycentric_weight = BlsFr::from(n)
+            .invert()
+            .into_option()
+            .context("evaluation domain size has no inverse")?;
+
+        Ok(Self {
+            backend: "halo2-axiom".to_string(),
+            curve: "bls12_381".to_string(),
+            pcs: "kzg-shplonk".to_string(),
+            transcript: "cardano-friendly-blake2b-256".to_string(),
+            proof_hex: hex::encode(proof),
+            n,
+            k: domain.k(),
+            quotient_poly_degree: domain.get_quotient_poly_degree(),
+            blinding_factors: vk.cs().blinding_factors(),
+            omega: scalar_hex(domain.get_omega()),
+            omega_inv: scalar_hex(domain.get_omega_inv()),
+            barycentric_weight: scalar_hex(barycentric_weight),
+            transcript_repr: scalar_hex(vk.transcript_repr()),
+            s_g2: g2_hex(params.s_g2()),
+            fixed_commitments: vk.fixed_commitments().iter().copied().map(g1_hex).collect(),
+            permutation_commitments: vk
+                .permutation()
+                .commitments()
+                .iter()
+                .copied()
+                .map(g1_hex)
+                .collect(),
+            shape: AxiomScalarMulShape::from_vk(vk)?,
+        })
+    }
+
     fn validate(&self) -> Result<()> {
         ensure!(
             self.backend.starts_with("halo2-axiom"),
@@ -290,6 +378,64 @@ impl AxiomScalarMulFixture {
 }
 
 impl AxiomScalarMulShape {
+    fn from_vk(vk: &VerifyingKey<G1Affine>) -> Result<Self> {
+        let cs = vk.cs();
+        let lookups = cs.lookups();
+        ensure!(
+            lookups.len() == 1,
+            "expected one lookup argument, got {}",
+            lookups.len()
+        );
+        let lookup = lookups.first().context("missing lookup argument")?;
+        ensure!(
+            lookup.input_expressions().len() == 1,
+            "expected one lookup input expression, got {}",
+            lookup.input_expressions().len()
+        );
+        ensure!(
+            lookup.table_expressions().len() == 1,
+            "expected one lookup table expression, got {}",
+            lookup.table_expressions().len()
+        );
+
+        Ok(Self {
+            num_fixed_columns: cs.num_fixed_columns(),
+            num_advice_columns: cs.num_advice_columns(),
+            num_instance_columns: cs.num_instance_columns(),
+            advice_queries: cs
+                .advice_queries()
+                .iter()
+                .map(|(column, rotation)| ColumnRotation {
+                    column: column.index(),
+                    rotation: rotation.0,
+                })
+                .collect(),
+            fixed_queries: cs
+                .fixed_queries()
+                .iter()
+                .map(|(column, rotation)| ColumnRotation {
+                    column: column.index(),
+                    rotation: rotation.0,
+                })
+                .collect(),
+            permutation_columns: cs
+                .permutation()
+                .get_columns()
+                .into_iter()
+                .map(|column| {
+                    Ok(PermutationColumn {
+                        column_type: column_type_name(column.column_type())?,
+                        column: column.index(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            lookup: LookupShape {
+                input: typed_column_rotation_from_expression(&lookup.input_expressions()[0])?,
+                table: typed_column_rotation_from_expression(&lookup.table_expressions()[0])?,
+            },
+        })
+    }
+
     fn validate(&self) -> Result<()> {
         ensure!(
             self.num_fixed_columns == 4,
@@ -410,6 +556,47 @@ impl AxiomScalarMulShape {
         );
         Ok(())
     }
+}
+
+fn typed_column_rotation_from_expression(expr: &Expression<BlsFr>) -> Result<TypedColumnRotation> {
+    match expr {
+        Expression::Advice(query) => Ok(TypedColumnRotation {
+            column_type: "advice".to_string(),
+            column: query.column_index(),
+            rotation: query.rotation().0,
+        }),
+        Expression::Fixed(query) => Ok(TypedColumnRotation {
+            column_type: "fixed".to_string(),
+            column: query.column_index(),
+            rotation: query.rotation().0,
+        }),
+        Expression::Instance(query) => Ok(TypedColumnRotation {
+            column_type: "instance".to_string(),
+            column: query.column_index(),
+            rotation: query.rotation().0,
+        }),
+        _ => bail!("expected lookup expression to be a direct column query"),
+    }
+}
+
+fn column_type_name(column_type: &Any) -> Result<String> {
+    match column_type {
+        Any::Advice(_) => Ok("advice".to_string()),
+        Any::Fixed => Ok("fixed".to_string()),
+        Any::Instance => Ok("instance".to_string()),
+    }
+}
+
+fn scalar_hex(scalar: BlsFr) -> String {
+    hex::encode(scalar.to_repr())
+}
+
+fn g1_hex(point: G1Affine) -> String {
+    hex::encode(point.to_bytes())
+}
+
+fn g2_hex(point: G2Affine) -> String {
+    hex::encode(point.to_bytes())
 }
 
 fn reverse_hex_bytes(hex_value: &str) -> Result<String> {
