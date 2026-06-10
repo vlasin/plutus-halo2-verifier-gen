@@ -7,8 +7,8 @@
 //! Supported scope is intentionally narrow. The generator currently targets
 //! Axiom Halo2 proofs over BLS12-381 KZG with SHPLONK openings and no public
 //! instance columns, no circuit-defined challenges, and only first-phase advice
-//! columns. Unsupported layouts fail during verification-key extraction instead
-//! of emitting partial verifier code.
+//! columns. Selector expressions are not supported. Unsupported layouts fail
+//! during verification-key extraction instead of emitting partial verifier code.
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use halo2_axiom::{
@@ -23,7 +23,7 @@ use halo2_axiom::{
 use handlebars::Handlebars;
 use std::{
     collections::{BTreeSet, HashMap},
-    fs::{self, File},
+    fs::File,
     path::{Path, PathBuf},
 };
 
@@ -44,18 +44,6 @@ const DEFAULT_PLINTH_TEST_OUTPUT: &str =
 const DEFAULT_PLINTH_TEST_MAIN_TEMPLATE: &str =
     "plinth-verifier/templates/axiom_proof_test_main.hbs";
 const DEFAULT_PLINTH_TEST_MAIN_OUTPUT: &str = "plinth-verifier/plutus-halo2/test/Test.hs";
-const DEFAULT_PLINTH_HASKELL_TEST_TEMPLATE: &str =
-    "plinth-verifier/templates/axiom_proof_test_haskell.hbs";
-const DEFAULT_PLINTH_HASKELL_TEST_OUTPUT: &str =
-    "plinth-verifier/plutus-halo2/test/Generic/VerificationTestHaskell.hs";
-const DEFAULT_PLINTH_COMPILED_STUB_TEMPLATE: &str =
-    "plinth-verifier/templates/axiom_verify_compiled_stub.hbs";
-const DEFAULT_PLINTH_COMPILED_STUB_OUTPUT: &str =
-    "plinth-verifier/plutus-halo2/test/Generic/VerifyCompiled.hs";
-const DEFAULT_PLINTH_PROOF_JSON_OUTPUT: &str =
-    "plinth-verifier/plutus-halo2/test/Generic/serialized_proof.json";
-const DEFAULT_PLINTH_PUBLIC_INPUT_OUTPUT: &str =
-    "plinth-verifier/plutus-halo2/test/Generic/serialized_public_input.hex";
 
 /// Output locations used by the Axiom SHPLONK generator.
 #[derive(Clone, Debug)]
@@ -72,12 +60,6 @@ pub struct AxiomShplonkOutputPaths {
     pub plinth_test_output: PathBuf,
     pub plinth_test_main_template: PathBuf,
     pub plinth_test_main_output: PathBuf,
-    pub plinth_haskell_test_template: PathBuf,
-    pub plinth_haskell_test_output: PathBuf,
-    pub plinth_compiled_stub_template: PathBuf,
-    pub plinth_compiled_stub_output: PathBuf,
-    pub plinth_proof_json_output: PathBuf,
-    pub plinth_public_input_output: PathBuf,
 }
 
 impl Default for AxiomShplonkOutputPaths {
@@ -95,12 +77,6 @@ impl Default for AxiomShplonkOutputPaths {
             plinth_test_output: DEFAULT_PLINTH_TEST_OUTPUT.into(),
             plinth_test_main_template: DEFAULT_PLINTH_TEST_MAIN_TEMPLATE.into(),
             plinth_test_main_output: DEFAULT_PLINTH_TEST_MAIN_OUTPUT.into(),
-            plinth_haskell_test_template: DEFAULT_PLINTH_HASKELL_TEST_TEMPLATE.into(),
-            plinth_haskell_test_output: DEFAULT_PLINTH_HASKELL_TEST_OUTPUT.into(),
-            plinth_compiled_stub_template: DEFAULT_PLINTH_COMPILED_STUB_TEMPLATE.into(),
-            plinth_compiled_stub_output: DEFAULT_PLINTH_COMPILED_STUB_OUTPUT.into(),
-            plinth_proof_json_output: DEFAULT_PLINTH_PROOF_JSON_OUTPUT.into(),
-            plinth_public_input_output: DEFAULT_PLINTH_PUBLIC_INPUT_OUTPUT.into(),
         }
     }
 }
@@ -111,6 +87,7 @@ impl Default for AxiomShplonkOutputPaths {
 /// - no public instance columns,
 /// - no circuit-defined challenges,
 /// - no multi-phase advice columns,
+/// - no selector expressions,
 /// - Axiom BLS12-381 KZG SHPLONK only.
 ///
 /// Unsupported verification-key layouts return an error before any verifier is
@@ -204,31 +181,8 @@ fn render_axiom_shplonk_verifiers(
         data,
     )
     .context("failed to render Axiom SHPLONK Plinth test main")?;
-    render_template(
-        &paths.plinth_haskell_test_template,
-        &paths.plinth_haskell_test_output,
-        data,
-    )
-    .context("failed to render Axiom SHPLONK Haskell verifier test")?;
-    render_template(
-        &paths.plinth_compiled_stub_template,
-        &paths.plinth_compiled_stub_output,
-        data,
-    )
-    .context("failed to render Axiom SHPLONK compiled verifier stub")?;
-    write_generated_file(
-        &paths.plinth_proof_json_output,
-        data.get("PROOF_JSON")
-            .context("missing rendered proof JSON data")?,
-    )?;
-    write_generated_file(&paths.plinth_public_input_output, "")?;
 
     Ok(())
-}
-
-fn write_generated_file(output_path: &Path, contents: &str) -> Result<()> {
-    fs::write(output_path, contents)
-        .with_context(|| format!("failed to write generated file {}", output_path.display()))
 }
 
 fn render_template(
@@ -300,10 +254,6 @@ impl AxiomShplonkRenderData {
             reverse_hex_bytes(&g2_hex(params.s_g2()))?,
         );
         data.insert("PROOF_HEX".to_string(), hex::encode(proof));
-        data.insert(
-            "PROOF_JSON".to_string(),
-            serde_json::to_string(proof).context("failed to serialize proof as JSON")?,
-        );
         data.insert(
             "AIKEN_FIXED_COMMITMENTS".to_string(),
             aiken_fixed_commitments(&fixed_commitments),

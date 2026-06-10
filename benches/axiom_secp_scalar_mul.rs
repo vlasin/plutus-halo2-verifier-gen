@@ -364,7 +364,7 @@ fn run_plinth_benchmark() -> String {
         .arg("--")
         .arg("cabal")
         .arg("test")
-        .arg("run-vector-test")
+        .arg("axiom-shplonk-test")
         .arg("--test-show-details=direct")
         .current_dir("plinth-verifier")
         .stdout(Stdio::piped())
