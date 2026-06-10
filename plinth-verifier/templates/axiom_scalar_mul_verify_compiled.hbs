@@ -1,0 +1,38 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+
+module Generic.VerifyCompiled (
+    verifyAppliedCompiled,
+    proofMintingPolicyContractApplied,
+    writeToFile,
+) where
+
+import PlutusTx (
+    CompiledCode,
+    CompiledCodeIn,
+ )
+import qualified PlutusTx
+import UntypedPlutusCore (
+    DefaultFun,
+    DefaultUni,
+ )
+import Prelude (
+    IO,
+    error,
+    pure,
+ )
+
+verifyAppliedCompiled :: CompiledCode ()
+verifyAppliedCompiled =
+    error "Axiom scalar-mul generation uses Generic.VerificationTestPlutus directly"
+
+proofMintingPolicyContractApplied ::
+    CompiledCodeIn
+        DefaultUni
+        DefaultFun
+        PlutusTx.BuiltinUnit
+proofMintingPolicyContractApplied =
+    error "Axiom scalar-mul generation uses Generic.VerificationTestPlutus directly"
+
+writeToFile :: IO ()
+writeToFile =
+    pure ()

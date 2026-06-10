@@ -1,0 +1,20 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+
+module Main where
+
+import qualified Generic.VerificationTestHaskell
+import qualified Generic.VerificationTestPlutus
+import qualified Test.Tasty as Tasty
+import Prelude (
+    IO,
+    ($),
+ )
+
+main :: IO ()
+main =
+    Tasty.defaultMain $
+        Tasty.testGroup
+            "Axiom scalar-mul verifier tests"
+            [ Generic.VerificationTestHaskell.test
+            , Generic.VerificationTestPlutus.test
+            ]

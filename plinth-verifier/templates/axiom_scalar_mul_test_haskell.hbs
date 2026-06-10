@@ -1,0 +1,26 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+
+module Generic.VerificationTestHaskell (test) where
+
+import Plutus.Crypto.Halo2.Generic.Verifier (verify)
+import PlutusTx.Builtins (
+    BuiltinByteString,
+ )
+import PlutusTx.Builtins.HasOpaque (
+    stringToBuiltinByteStringHex,
+ )
+import qualified Test.Tasty as Tasty
+import qualified Test.Tasty.HUnit as Tasty
+import Prelude (
+    ($),
+ )
+
+proofForTesting :: BuiltinByteString
+proofForTesting =
+    stringToBuiltinByteStringHex
+        "{{PROOF_HEX}}"
+
+test :: Tasty.TestTree
+test = Tasty.testCase "Axiom scalar-mul proof verification in Haskell" $ do
+    let (result, _) = verify proofForTesting
+    Tasty.assertBool "proof verification failed" result

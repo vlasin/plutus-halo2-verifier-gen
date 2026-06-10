@@ -1,0 +1,84 @@
+{-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -fplugin PlutusTx.Plugin
+       -fplugin-opt PlutusTx.Plugin:max-cse-iterations=4
+       -fplugin-opt PlutusTx.Plugin:max-simplifier-iterations-pir=0
+       -fplugin-opt PlutusTx.Plugin:max-simplifier-iterations-uplc=0
+       -fplugin-opt PlutusTx.Plugin:max-cse-iterations=0
+       -fplugin-opt PlutusTx.Plugin:no-inline-constants
+       -fplugin-opt PlutusTx.Plugin:no-preserve-logging
+       -fplugin-opt PlutusTx.Plugin:remove-trace
+       -fplugin-opt PlutusTx.Plugin:target-version=1.1.0
+       -fplugin-opt PlutusTx.Plugin:verbosity=0 #-}
+
+module Generic.VerificationTestPlutus (test) where
+
+import EvalUtils (
+    evalWithBudget',
+    exBudgetCPUToInt,
+    exBudgetMemoryToInt,
+ )
+import Plutus.Crypto.Halo2.Generic.Verifier (verify)
+import PlutusTx (
+    CompiledCode,
+    compile,
+    liftCodeDef,
+    unsafeApplyCode,
+ )
+import PlutusTx.Builtins (
+    BuiltinByteString,
+ )
+import PlutusTx.Builtins.HasOpaque (
+    stringToBuiltinByteStringHex,
+ )
+import qualified PlutusTx.Prelude as PlutusTx
+import qualified Test.Tasty as Tasty
+import qualified Test.Tasty.HUnit as Tasty
+import Prelude (
+    Either (Left, Right),
+    Integer,
+    fail,
+    putStrLn,
+    show,
+    ($),
+    (<>),
+ )
+
+memoryLimit :: Integer
+memoryLimit = 16_500_000
+
+cpuLimit :: Integer
+cpuLimit = 10_000_000_000
+
+proofForTesting :: BuiltinByteString
+proofForTesting =
+    stringToBuiltinByteStringHex
+        "{{PROOF_HEX}}"
+
+verifyAdapter :: BuiltinByteString -> ()
+verifyAdapter proof =
+    let (result, _) = verify proof
+     in if result PlutusTx.== PlutusTx.True
+            then ()
+            else PlutusTx.error ()
+
+verifyCompiled :: CompiledCode (BuiltinByteString -> ())
+verifyCompiled = $$(compile [||verifyAdapter||])
+
+verifyAppliedCompiled :: CompiledCode ()
+verifyAppliedCompiled =
+    verifyCompiled `unsafeApplyCode` liftCodeDef proofForTesting
+
+test :: Tasty.TestTree
+test = Tasty.testCase "Axiom scalar-mul proof verification in Plutus" $ do
+    case evalWithBudget' verifyAppliedCompiled of
+        Left e -> fail $ "Evaluator failed: " <> show e
+        Right (budget, _) -> do
+            putStrLn $ "Axiom scalar-mul Plinth verifier budget: " <> show budget
+            Tasty.assertBool
+                "Memory budget exceeded"
+                (exBudgetMemoryToInt budget < memoryLimit)
+            Tasty.assertBool
+                "CPU budget exceeded"
+                (exBudgetCPUToInt budget < cpuLimit)
