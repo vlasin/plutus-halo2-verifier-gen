@@ -1,0 +1,249 @@
+use aiken/collection/list.{foldl, map, zip}
+use aiken/crypto/bitwise.{State}
+use aiken/crypto/bls12_381/g1.{
+  add as add_g1, decompress, scale as scale_g1, zero as zero_g1,
+}
+use aiken/crypto/bls12_381/g2.{decompress as decompress_g2, generator as generator_g2}
+use aiken/crypto/bls12_381/pairing.{final_exponentiation, miller_loop}
+use aiken/crypto/bls12_381/scalar.{
+  Scalar, add, from_bytes_little_endian, from_int, mul, neg,
+  scale as scalar_pow, sub, sub_int,
+}
+use bls_utils.{MSM, MSMElement, add_msm, recip_eea}
+use lagrange.{batch_inverses, lagrange_polynomial_basis}
+use omega_rotations.{rotate_omega, rotate_omegas}
+use aiken/primitive/bytearray
+use transcript.{construct_transcript, read_point, read_scalar, squeeze_challenge}
+
+const n = {{{N}}}
+
+const blinding_factors = {{{BLINDING_FACTORS}}}
+
+const g1_generator_bytes =
+  #"bbc622db0af03afbef1a7af93fe8556c58ac1b173f3a4ea105b974974f8c68c30faca94f8c63952694d79731a7d3f197"
+
+const scalar_delta =
+  from_int(
+    0x08634d0aa021aaf843cab354fabb0062f6502437c6a09c006c083479590189d7,
+  )
+
+const transcript_rep =
+  from_bytes_little_endian(
+    #"{{TRANSCRIPT_REP}}",
+  )
+
+const omega =
+  from_bytes_little_endian(
+    #"{{OMEGA}}",
+  )
+
+const omega_inv =
+  from_bytes_little_endian(
+    #"{{OMEGA_INV}}",
+  )
+
+const barycentric_weight =
+  from_bytes_little_endian(
+    #"{{BARYCENTRIC_WEIGHT}}",
+  )
+
+const s_g2 =
+  decompress_g2(
+    #"{{S_G2_CARDANO}}",
+  )
+
+{{{AIKEN_FIXED_COMMITMENTS}}}
+
+{{{AIKEN_PERMUTATION_COMMITMENTS}}}
+
+const proof_for_testing =
+  #"{{PROOF_HEX}}"
+
+pub type ProofPieces {
+{{{AIKEN_PROOF_FIELDS}}}
+}
+
+pub type Opening {
+  msm: MSM,
+  evals: List<State<Scalar>>,
+}
+
+pub fn verifier(proof: Data) -> Bool {
+  let p = parse_proof(proof)
+  let expected_h = expected_h_eval(p)
+  shplonk_pairing_check(p, expected_h)
+}
+
+fn parse_proof(proof: Data) -> ProofPieces {
+{{{AIKEN_PARSE_PROOF}}}
+}
+
+fn expected_h_eval(p: ProofPieces) -> State<Scalar> {
+{{{AIKEN_EXPECTED_H_EVAL}}}
+}
+
+fn shplonk_pairing_check(p: ProofPieces, expected_h: State<Scalar>) -> Bool {
+{{{AIKEN_SHPLONK_PAIRING_CHECK}}}
+}
+
+fn rotation_contribution(
+  points: List<State<Scalar>>,
+  openings: List<Opening>,
+  u: State<Scalar>,
+  y: State<Scalar>,
+  v_power: State<Scalar>,
+  z_diff: State<Scalar>,
+) -> (MSM, State<Scalar>) {
+  let basis = lagrange_basis_at(points, u)
+  let factor = mul(v_power, z_diff)
+  let (inner_msm, r_inner) =
+    rotation_contribution_go(
+      openings,
+      basis,
+      y,
+      factor,
+      from_int(1),
+      MSM { elements: [] },
+      from_int(0),
+    )
+  (inner_msm, mul(factor, r_inner))
+}
+
+fn rotation_contribution_go(
+  openings: List<Opening>,
+  basis: List<State<Scalar>>,
+  y: State<Scalar>,
+  factor: State<Scalar>,
+  y_power: State<Scalar>,
+  msm_acc: MSM,
+  r_acc: State<Scalar>,
+) -> (MSM, State<Scalar>) {
+  when openings is {
+    [] -> (msm_acc, r_acc)
+    [opening, ..rest] -> {
+      let r_eval = weighted_sum(opening.evals, basis)
+      rotation_contribution_go(
+        rest,
+        basis,
+        y,
+        factor,
+        mul(y_power, y),
+        add_scaled_msm(msm_acc, mul(factor, y_power), opening.msm),
+        add(r_acc, mul(y_power, r_eval)),
+      )
+    }
+  }
+}
+
+fn add_scaled_msm(acc: MSM, scalar: State<Scalar>, msm: MSM) -> MSM {
+  MSM { elements: add_scaled_elements(msm.elements, scalar, acc.elements) }
+}
+
+fn add_scaled_elements(
+  elements: List<MSMElement>,
+  scalar: State<Scalar>,
+  acc: List<MSMElement>,
+) -> List<MSMElement> {
+  when elements is {
+    [] -> acc
+    [element, ..rest] ->
+      add_scaled_elements(
+        rest,
+        scalar,
+        [
+          MSMElement { scalar: mul(scalar, element.scalar), g1: element.g1 },
+          ..acc
+        ],
+      )
+  }
+}
+
+fn lagrange_basis_at(
+  points: List<State<Scalar>>,
+  x: State<Scalar>,
+) -> List<State<Scalar>> {
+  when points is {
+    [] -> []
+    [_] -> [from_int(1)]
+    _ -> {
+      let basis_data =
+        map(
+          points,
+          fn(xi) {
+            foldl(
+              points,
+              (from_int(1), from_int(1)),
+              fn(xj, (num, denom)) {
+                if xj == xi {
+                  (num, denom)
+                } else {
+                  (mul(num, sub(x, xj)), mul(denom, sub(xi, xj)))
+                }
+              },
+            )
+          },
+        )
+      let inverted_denominators =
+        batch_inverses(map(basis_data, fn((_, denom)) { denom }))
+      map(
+        zip(basis_data, inverted_denominators),
+        fn(((num, _), denom_inv)) { mul(num, denom_inv) },
+      )
+    }
+  }
+}
+
+fn weighted_sum(
+  evals: List<State<Scalar>>,
+  basis: List<State<Scalar>>,
+) -> State<Scalar> {
+  when evals is {
+    [eval] -> eval
+    _ ->
+      foldl(
+        zip(evals, basis),
+        from_int(0),
+        fn((eval, basis), acc) { add(acc, mul(eval, basis)) },
+      )
+  }
+}
+
+fn point_opening(point: ByteArray, evals: List<State<Scalar>>) -> Opening {
+  Opening { msm: point_msm(point), evals }
+}
+
+fn point_msm(point: ByteArray) -> MSM {
+  MSM {
+    elements: [MSMElement { scalar: from_int(1), g1: point }],
+  }
+}
+
+fn vanishing_h_msm(p: ProofPieces, xn: State<Scalar>) -> MSM {
+{{{AIKEN_VANISHING_H_MSM}}}
+}
+
+fn vanishing(points: List<State<Scalar>>, u: State<Scalar>) -> State<Scalar> {
+  foldl(points, from_int(1), fn(point, acc) { mul(acc, sub(u, point)) })
+}
+
+fn eval_axiom_msm(msm: MSM) -> G1Element {
+  foldl(
+    msm.elements,
+    zero_g1,
+    fn(element, acc) {
+      add_g1(acc, scale_g1(axiom_decompress_g1(element.g1), element.scalar))
+    },
+  )
+}
+
+fn axiom_decompress_g1(bytes: ByteArray) -> G1Element {
+  decompress(reverse_bytes(bytes))
+}
+
+fn reverse_bytes(bytes: ByteArray) -> ByteArray {
+  bytearray.foldl(bytes, #"", fn(byte, acc) { bytearray.push(acc, byte) })
+}
+
+test valid_axiom_shplonk_proof_benchmark() {
+  verifier(proof_for_testing)
+}

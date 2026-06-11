@@ -6,6 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 halo2_proofs = { git = "https://github.com/input-output-hk/halo2", rev = "0bca06e58937fbe213a0530ecac9d8e0fed501d6" }
+halo2_axiom = { package = "halo2-axiom", git = "https://github.com/vlasin/halo2.git", rev = "c511ad5d5d172b0ac093d06d5a36ed36fba63440" }
 atms-halo2 = { git = "https://github.com/input-output-hk/sidechains-zk/", rev = "8828ea3f86cfc113f9bc33fb4801dfea2654f05d", package = "atms-halo2" }
 halo2curves = { version = "0.7.0" }
 blstrs = { git = "https://github.com/davidnevadoc/blstrs", rev = "3dfe5bf" }
@@ -24,5 +25,13 @@ rand = "0.8"
 rand_chacha = "0.3.1"
 anyhow = "1.0.100"
 
+[dev-dependencies]
+halo2-base = { git = "https://github.com/vlasin/halo2-lib.git", rev = "2f753ef0508d5d7500865f2ca803069bcfe4c80d", default-features = false, features = ["halo2-axiom"] }
+halo2-ecc = { git = "https://github.com/vlasin/halo2-lib.git", rev = "2f753ef0508d5d7500865f2ca803069bcfe4c80d", default-features = false, features = ["halo2-axiom"] }
+
 [features]
 plutus_debug = ["halo2_proofs/plutus_debug"]
+
+[[bench]]
+name = "axiom_secp_scalar_mul"
+harness = false
