@@ -25,7 +25,7 @@ use halo2_axiom::{
 use handlebars::Handlebars;
 use std::{
     collections::{BTreeSet, HashMap},
-    fs::File,
+    fs::{self, File},
     path::{Path, PathBuf},
 };
 
@@ -46,6 +46,19 @@ const DEFAULT_PLINTH_TEST_OUTPUT: &str =
 const DEFAULT_PLINTH_TEST_MAIN_TEMPLATE: &str =
     "plinth-verifier/templates/axiom_proof_test_main.hbs";
 const DEFAULT_PLINTH_TEST_MAIN_OUTPUT: &str = "plinth-verifier/plutus-halo2/test/Test.hs";
+
+const EMBEDDED_AIKEN_TEMPLATE: &str =
+    include_str!("../../aiken-verifier/templates/axiom_shplonk.hbs");
+const EMBEDDED_AIKEN_VK_TEMPLATE: &str =
+    include_str!("../../aiken-verifier/templates/axiom_verifier_key_stub.hbs");
+const EMBEDDED_AIKEN_BLS_UTILS: &str =
+    include_str!("../../aiken-verifier/aiken_halo2/lib/bls_utils.ak");
+const EMBEDDED_AIKEN_LAGRANGE: &str =
+    include_str!("../../aiken-verifier/aiken_halo2/lib/lagrange.ak");
+const EMBEDDED_AIKEN_OMEGA_ROTATIONS: &str =
+    include_str!("../../aiken-verifier/aiken_halo2/lib/omega_rotations.ak");
+const EMBEDDED_AIKEN_TRANSCRIPT: &str =
+    include_str!("../../aiken-verifier/aiken_halo2/lib/transcript.ak");
 
 /// Output locations used by the Axiom SHPLONK generator.
 #[derive(Clone, Debug)]
@@ -81,6 +94,18 @@ impl Default for AxiomShplonkOutputPaths {
             plinth_test_main_output: DEFAULT_PLINTH_TEST_MAIN_OUTPUT.into(),
         }
     }
+}
+
+/// Output locations used by the embedded Aiken-only Axiom SHPLONK generator.
+///
+/// The generator writes `proof_verifier.ak`, `verifier_key.ak`, and the shared
+/// Aiken support modules needed by those files. Callers still own their Aiken
+/// project manifest, validators, and tests.
+#[derive(Clone, Debug)]
+pub struct AxiomShplonkAikenOutputPaths {
+    pub verifier_output: PathBuf,
+    pub verifier_key_output: PathBuf,
+    pub support_dir: PathBuf,
 }
 
 /// Generate both Aiken and Plinth verifier sources from Axiom proving artifacts.
@@ -153,6 +178,37 @@ pub fn generate_axiom_shplonk_verifiers_from_vk_and_instances_with_paths(
     let render_data =
         AxiomShplonkRenderData::from_vk_and_proof(params, vk, proof, public_instances)?;
     render_axiom_shplonk_verifiers(&render_data.data, paths)
+}
+
+/// Generate an Aiken verifier bundle from Axiom proving artifacts.
+///
+/// This embedded-template variant is intended for downstream crates that need a
+/// self-contained generated Aiken verifier without copying generator templates
+/// or support modules into their own repository.
+pub fn generate_axiom_shplonk_aiken_from_vk(
+    params: &ParamsKZG<Bls12>,
+    vk: &VerifyingKey<G1Affine>,
+    proof: &[u8],
+    paths: &AxiomShplonkAikenOutputPaths,
+) -> Result<()> {
+    generate_axiom_shplonk_aiken_from_vk_and_instances(params, vk, proof, &[], paths)
+}
+
+/// Generate an Aiken verifier bundle from Axiom proving artifacts and public
+/// instance values.
+///
+/// Has the same supported scope as
+/// [`generate_axiom_shplonk_verifiers_from_vk_and_instances`].
+pub fn generate_axiom_shplonk_aiken_from_vk_and_instances(
+    params: &ParamsKZG<Bls12>,
+    vk: &VerifyingKey<G1Affine>,
+    proof: &[u8],
+    public_instances: &[&[BlsFr]],
+    paths: &AxiomShplonkAikenOutputPaths,
+) -> Result<()> {
+    let render_data =
+        AxiomShplonkRenderData::from_vk_and_proof(params, vk, proof, public_instances)?;
+    render_axiom_shplonk_aiken(&render_data.data, paths)
 }
 
 /// Generate both Aiken and Plinth verifier sources from an Axiom circuit and
@@ -241,6 +297,41 @@ where
     )
 }
 
+/// Generate an Aiken verifier bundle from an Axiom circuit and proof bytes.
+///
+/// Has the same supported scope as [`generate_axiom_shplonk_verifiers_from_vk`].
+pub fn generate_axiom_shplonk_aiken_from_circuit<ConcreteCircuit>(
+    params: &ParamsKZG<Bls12>,
+    circuit: &ConcreteCircuit,
+    proof: &[u8],
+    paths: &AxiomShplonkAikenOutputPaths,
+) -> Result<()>
+where
+    ConcreteCircuit: Circuit<BlsFr>,
+{
+    generate_axiom_shplonk_aiken_from_circuit_and_instances(params, circuit, proof, &[], paths)
+}
+
+/// Generate an Aiken verifier bundle from an Axiom circuit, proof bytes, and
+/// public instance values.
+///
+/// Has the same supported scope as
+/// [`generate_axiom_shplonk_verifiers_from_vk_and_instances`].
+pub fn generate_axiom_shplonk_aiken_from_circuit_and_instances<ConcreteCircuit>(
+    params: &ParamsKZG<Bls12>,
+    circuit: &ConcreteCircuit,
+    proof: &[u8],
+    public_instances: &[&[BlsFr]],
+    paths: &AxiomShplonkAikenOutputPaths,
+) -> Result<()>
+where
+    ConcreteCircuit: Circuit<BlsFr>,
+{
+    let vk = keygen_vk::<G1Affine, _, _>(params, circuit)
+        .map_err(|err| anyhow!("failed to generate Axiom verifying key: {err:?}"))?;
+    generate_axiom_shplonk_aiken_from_vk_and_instances(params, &vk, proof, public_instances, paths)
+}
+
 fn render_axiom_shplonk_verifiers(
     data: &HashMap<String, String>,
     paths: &AxiomShplonkOutputPaths,
@@ -269,6 +360,37 @@ fn render_axiom_shplonk_verifiers(
     Ok(())
 }
 
+fn render_axiom_shplonk_aiken(
+    data: &HashMap<String, String>,
+    paths: &AxiomShplonkAikenOutputPaths,
+) -> Result<()> {
+    render_template_text(EMBEDDED_AIKEN_TEMPLATE, &paths.verifier_output, data)
+        .context("failed to render embedded Axiom SHPLONK Aiken verifier")?;
+    render_template_text(EMBEDDED_AIKEN_VK_TEMPLATE, &paths.verifier_key_output, data)
+        .context("failed to render embedded Axiom SHPLONK Aiken verifier key stub")?;
+    write_axiom_shplonk_aiken_support_files(&paths.support_dir)
+}
+
+/// Write the shared Aiken support modules used by Axiom SHPLONK verifier output.
+pub fn write_axiom_shplonk_aiken_support_files(support_dir: impl AsRef<Path>) -> Result<()> {
+    let support_dir = support_dir.as_ref();
+    fs::create_dir_all(support_dir).with_context(|| {
+        format!(
+            "failed to create Aiken support dir {}",
+            support_dir.display()
+        )
+    })?;
+    for (file_name, contents) in [
+        ("bls_utils.ak", EMBEDDED_AIKEN_BLS_UTILS),
+        ("lagrange.ak", EMBEDDED_AIKEN_LAGRANGE),
+        ("omega_rotations.ak", EMBEDDED_AIKEN_OMEGA_ROTATIONS),
+        ("transcript.ak", EMBEDDED_AIKEN_TRANSCRIPT),
+    ] {
+        write_embedded_file(&support_dir.join(file_name), contents)?;
+    }
+    Ok(())
+}
+
 fn render_template(
     template_path: &Path,
     output_path: &Path,
@@ -284,6 +406,38 @@ fn render_template(
     handlebars
         .render_to_write("template", data, &mut output)
         .with_context(|| format!("failed to render {}", output_path.display()))
+}
+
+fn render_template_text(
+    template: &str,
+    output_path: &Path,
+    data: &HashMap<String, String>,
+) -> Result<()> {
+    ensure_parent_dir(output_path)?;
+    let mut handlebars = Handlebars::new();
+    handlebars.set_strict_mode(true);
+    handlebars
+        .register_template_string("template", template)
+        .context("failed to register embedded template")?;
+    let mut output = File::create(output_path)
+        .with_context(|| format!("failed to create generated file {}", output_path.display()))?;
+    handlebars
+        .render_to_write("template", data, &mut output)
+        .with_context(|| format!("failed to render {}", output_path.display()))
+}
+
+fn write_embedded_file(path: &Path, contents: &str) -> Result<()> {
+    ensure_parent_dir(path)?;
+    fs::write(path, contents)
+        .with_context(|| format!("failed to write embedded file {}", path.display()))
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output dir {}", parent.display()))?;
+    }
+    Ok(())
 }
 
 struct AxiomShplonkRenderData {
@@ -661,24 +815,30 @@ impl AxiomLayout {
     }
 
     fn aiken_parse_proof(&self) -> String {
+        let items = self.proof_items();
         let mut lines = vec![
             "  let transcript = construct_transcript(proof, transcript_rep)".to_string(),
             "  let transcript = foldl(public_inputs, transcript, fn(input, transcript) { common_scalar(input, transcript) })".to_string(),
         ];
-        for item in self.proof_items() {
+        for (idx, item) in items.iter().enumerate() {
             let read = match item.kind {
                 ProofItemKind::Point => "read_point",
                 ProofItemKind::Scalar => "read_scalar",
                 ProofItemKind::Challenge => "squeeze_challenge",
             };
+            let transcript_name = if idx + 1 == items.len() {
+                "_transcript"
+            } else {
+                "transcript"
+            };
             lines.push(format!(
-                "  let ({}, transcript) = {read}(transcript)",
+                "  let ({}, {transcript_name}) = {read}(transcript)",
                 item.name.aiken()
             ));
         }
         lines.push("  ProofPieces {".to_string());
         lines.extend(
-            self.proof_items()
+            items
                 .into_iter()
                 .map(|item| format!("    {},", item.name.aiken())),
         );
