@@ -8,7 +8,7 @@ mod cardano_transcript;
 
 use cardano_transcript::{CardanoBlake2bRead, CardanoBlake2bWrite};
 use halo2_base::{
-    Context,
+    AssignedValue, Context,
     gates::{
         RangeChip,
         circuit::{BaseCircuitParams, CircuitBuilderStage, builder::RangeCircuitBuilder},
@@ -38,7 +38,7 @@ use halo2_ecc::{
     fields::FieldChip,
     secp256k1::{FpChip, FqChip},
 };
-use plutus_halo2_verifier_gen::plutus_gen::generate_axiom_shplonk_verifiers_from_vk;
+use plutus_halo2_verifier_gen::plutus_gen::generate_axiom_shplonk_verifiers_from_vk_and_instances;
 use rand::{SeedableRng, rngs::StdRng};
 use serde_json::Value;
 
@@ -99,20 +99,26 @@ fn main() {
     drop(keygen_builder);
 
     let witness_start = Instant::now();
-    let prover_builder = build_prover_circuit(config_params, break_points, params, base, scalar);
+    let (prover_builder, public_instances) =
+        build_prover_circuit(config_params, break_points, params, base, scalar);
     let witness_time = witness_start.elapsed();
 
     let proof_start = Instant::now();
-    let proof = gen_proof(&kzg_params, &pk, prover_builder);
+    let proof = gen_proof(&kzg_params, &pk, prover_builder, &public_instances);
     let proof_time = proof_start.elapsed();
 
     let verify_start = Instant::now();
-    verify(&kzg_params, &pk, &proof);
+    verify(&kzg_params, &pk, &proof, &public_instances);
     let verify_time = verify_start.elapsed();
 
     let generator_start = Instant::now();
-    generate_axiom_shplonk_verifiers_from_vk(&kzg_params, pk.get_vk(), &proof)
-        .expect("Axiom SHPLONK verifier generation should succeed");
+    generate_axiom_shplonk_verifiers_from_vk_and_instances(
+        &kzg_params,
+        pk.get_vk(),
+        &proof,
+        &[public_instances.as_slice()],
+    )
+    .expect("Axiom SHPLONK verifier generation should succeed");
     let generator_time = generator_start.elapsed();
 
     println!(
@@ -138,6 +144,7 @@ fn main() {
     );
     println!("total_lookup_cells: {}", stats.total_lookup_cells);
     println!("total_fixed_cells: {}", stats.total_fixed_cells);
+    println!("public_instance_count: {}", public_instances.len());
     println!("proof_size_bytes: {}", proof.len());
     println!("setup_time: {}", fmt_duration(setup_time));
     println!("vk_time: {}", fmt_duration(vk_time));
@@ -174,11 +181,13 @@ fn build_keygen_circuit(
     base: Secp256k1Affine,
     scalar: Fq,
 ) -> (RangeCircuitBuilder<BlsFr>, CircuitStats) {
-    let mut builder =
-        RangeCircuitBuilder::from_stage(CircuitBuilderStage::Keygen).use_k(params.degree as usize);
+    let mut builder = RangeCircuitBuilder::from_stage(CircuitBuilderStage::Keygen)
+        .use_k(params.degree as usize)
+        .use_instance_columns(1);
     builder.set_lookup_bits(params.lookup_bits);
     let range = builder.range_chip();
-    run_scalar_mul(builder.main(0), &range, params, base, scalar);
+    let public_input_cells = run_scalar_mul(builder.main(0), &range, params, base, scalar);
+    builder.assigned_instances[0].extend(public_input_cells);
 
     let raw_stats = builder.statistics();
     let total_advice_cells = raw_stats.gate.total_advice_per_phase.iter().sum();
@@ -209,12 +218,14 @@ fn build_prover_circuit(
     params: ScalarMulParams,
     base: Secp256k1Affine,
     scalar: Fq,
-) -> RangeCircuitBuilder<BlsFr> {
+) -> (RangeCircuitBuilder<BlsFr>, Vec<BlsFr>) {
     let mut builder = RangeCircuitBuilder::prover(config_params, break_points);
     builder.set_lookup_bits(params.lookup_bits);
     let range = builder.range_chip();
-    run_scalar_mul(builder.main(0), &range, params, base, scalar);
-    builder
+    let public_input_cells = run_scalar_mul(builder.main(0), &range, params, base, scalar);
+    builder.assigned_instances[0].extend(public_input_cells);
+    let public_instances = public_instance_values(&builder.assigned_instances[0]);
+    (builder, public_instances)
 }
 
 fn run_scalar_mul<F: BigPrimeField>(
@@ -223,13 +234,18 @@ fn run_scalar_mul<F: BigPrimeField>(
     params: ScalarMulParams,
     base: Secp256k1Affine,
     scalar: Fq,
-) {
+) -> Vec<AssignedValue<F>> {
     let fp_chip = FpChip::<F>::new(range, params.limb_bits, params.num_limbs);
     let fq_chip = FqChip::<F>::new(range, params.limb_bits, params.num_limbs);
     let ecc_chip = EccChip::<F, FpChip<F>>::new(&fp_chip);
 
     let scalar_assigned = fq_chip.load_private(ctx, scalar);
     let base_assigned = ecc_chip.assign_point(ctx, base);
+    let mut public_inputs = Vec::with_capacity(params.num_limbs * 5);
+    public_inputs.extend_from_slice(scalar_assigned.limbs());
+    public_inputs.extend_from_slice(base_assigned.x.limbs());
+    public_inputs.extend_from_slice(base_assigned.y.limbs());
+
     let product = ecc_chip.scalar_mult::<Secp256k1Affine>(
         ctx,
         base_assigned,
@@ -241,14 +257,30 @@ fn run_scalar_mul<F: BigPrimeField>(
     let expected = (base * scalar).to_affine();
     assert_eq!(product.x.value(), fe_to_biguint(&expected.x));
     assert_eq!(product.y.value(), fe_to_biguint(&expected.y));
+
+    public_inputs.extend_from_slice(product.x.limbs());
+    public_inputs.extend_from_slice(product.y.limbs());
+    public_inputs
 }
 
-fn gen_proof<C>(params: &ParamsKZG<Bls12>, pk: &ProvingKey<G1Affine>, circuit: C) -> Vec<u8>
+fn public_instance_values(public_input_cells: &[AssignedValue<BlsFr>]) -> Vec<BlsFr> {
+    public_input_cells
+        .iter()
+        .map(|public_input| *public_input.value())
+        .collect()
+}
+
+fn gen_proof<C>(
+    params: &ParamsKZG<Bls12>,
+    pk: &ProvingKey<G1Affine>,
+    circuit: C,
+    public_instances: &[BlsFr],
+) -> Vec<u8>
 where
     C: Circuit<BlsFr>,
 {
     let rng = StdRng::seed_from_u64(1);
-    let instances: &[&[BlsFr]] = &[];
+    let instances: &[&[BlsFr]] = &[public_instances];
     let mut transcript = CardanoBlake2bWrite::<_, G1Affine>::init(vec![]);
     create_proof::<
         KZGCommitmentScheme<Bls12>,
@@ -262,10 +294,15 @@ where
     transcript.finalize()
 }
 
-fn verify(params: &ParamsKZG<Bls12>, pk: &ProvingKey<G1Affine>, proof: &[u8]) {
+fn verify(
+    params: &ParamsKZG<Bls12>,
+    pk: &ProvingKey<G1Affine>,
+    proof: &[u8],
+    public_instances: &[BlsFr],
+) {
     let verifier_params = params.verifier_params();
     let strategy = SingleStrategy::new(params);
-    let instances: &[&[BlsFr]] = &[];
+    let instances: &[&[BlsFr]] = &[public_instances];
     let mut transcript = CardanoBlake2bRead::<_, G1Affine>::init(proof);
     verify_proof::<
         KZGCommitmentScheme<Bls12>,

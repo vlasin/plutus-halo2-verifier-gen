@@ -3,7 +3,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 
-module Plutus.Crypto.Halo2.Generic.Verifier (verify) where
+module Plutus.Crypto.Halo2.Generic.Verifier (scalarFromLittleEndianHex, verify) where
 
 import GHC.ByteOrder (ByteOrder (LittleEndian))
 import qualified Plutus.Crypto.BlsUtils as BlsUtils
@@ -56,7 +56,7 @@ import PlutusTx.List (
 import PlutusTx.Prelude (
     AdditiveGroup ((-)),
     AdditiveSemigroup ((+)),
-    Bool,
+    Bool (False),
     Eq ((==)),
     Integer,
     MultiplicativeMonoid (one),
@@ -81,9 +81,6 @@ data ProofPieces = ProofPieces
 
 n :: Integer
 n = {{{N}}}
-
-blindingFactors :: Integer
-blindingFactors = {{{BLINDING_FACTORS}}}
 
 scalarZero :: Scalar
 scalarZero = mkScalar 0
@@ -134,12 +131,16 @@ scalarR =
         (0x1824b159acc5056f998c4fefecbc4ff55884b7fa0003480200000001fffffffe `modulo` bls12_381_field_prime)
 
 {-# INLINEABLE verify #-}
-verify :: Proof -> (Bool, [(BuiltinByteString, BlsUtils.Tracing)])
-verify proof =
-    let !pieces = parseProof proof
-        !expectedH = expectedHEval pieces
-        !ok = shplonkPairingCheck pieces expectedH
-     in (ok, [])
+verify :: Proof -> [Scalar] -> (Bool, [(BuiltinByteString, BlsUtils.Tracing)])
+verify proof publicInputsRaw =
+    case publicInputsRaw of
+        {{{PLINTH_PUBLIC_INPUT_PATTERN}}} ->
+            let !pieces = parseProof proof publicInputsRaw
+                _ = theta pieces
+                !expectedH = expectedHEval pieces publicInputsRaw
+                !ok = shplonkPairingCheck pieces expectedH
+             in (ok, [])
+        _ -> (False, [])
 
 {-# INLINEABLE scalarFromLittleEndianHex #-}
 scalarFromLittleEndianHex :: BuiltinByteString -> Scalar
@@ -181,13 +182,13 @@ squeezeChallenge (!proof, !transcript) =
      in (scalar, (proof, challengeInput))
 
 {-# INLINEABLE parseProof #-}
-parseProof :: Proof -> ProofPieces
-parseProof proof =
+parseProof :: Proof -> [Scalar] -> ProofPieces
+parseProof proof publicInputs =
 {{{PLINTH_PARSE_PROOF}}}
 
 {-# INLINEABLE expectedHEval #-}
-expectedHEval :: ProofPieces -> Scalar
-expectedHEval pieces =
+expectedHEval :: ProofPieces -> [Scalar] -> Scalar
+expectedHEval pieces publicInputs =
 {{{PLINTH_EXPECTED_H_EVAL}}}
 
 {-# INLINEABLE shplonkPairingCheck #-}

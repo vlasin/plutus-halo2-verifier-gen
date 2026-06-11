@@ -18,7 +18,13 @@ module Generic.VerificationTestPlutus (test) where
 import EvalUtils (
     evalWithBudget',
  )
-import Plutus.Crypto.Halo2.Generic.Verifier (verify)
+import Plutus.Crypto.BlsTypes (
+    Scalar,
+ )
+import Plutus.Crypto.Halo2.Generic.Verifier (
+    scalarFromLittleEndianHex,
+    verify,
+ )
 import PlutusTx (
     CompiledCode,
     compile,
@@ -48,19 +54,25 @@ proofForTesting =
     stringToBuiltinByteStringHex
         "{{PROOF_HEX}}"
 
-verifyAdapter :: BuiltinByteString -> ()
-verifyAdapter proof =
-    let (result, _) = verify proof
+publicInputsForTesting :: [Scalar]
+publicInputsForTesting =
+    {{{PLINTH_PUBLIC_INPUTS_FOR_TESTING}}}
+
+verifyAdapter :: BuiltinByteString -> [Scalar] -> ()
+verifyAdapter proof publicInputs =
+    let (result, _) = verify proof publicInputs
      in if result PlutusTx.== PlutusTx.True
             then ()
             else PlutusTx.error ()
 
-verifyCompiled :: CompiledCode (BuiltinByteString -> ())
+verifyCompiled :: CompiledCode (BuiltinByteString -> [Scalar] -> ())
 verifyCompiled = $$(compile [||verifyAdapter||])
 
 verifyAppliedCompiled :: CompiledCode ()
 verifyAppliedCompiled =
-    verifyCompiled `unsafeApplyCode` liftCodeDef proofForTesting
+    verifyCompiled
+        `unsafeApplyCode` liftCodeDef proofForTesting
+        `unsafeApplyCode` liftCodeDef publicInputsForTesting
 
 test :: Tasty.TestTree
 test = Tasty.testCase "Axiom SHPLONK proof verification in Plutus" $ do
