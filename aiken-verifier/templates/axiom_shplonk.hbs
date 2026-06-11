@@ -13,7 +13,10 @@ use bls_utils.{MSM, MSMElement, add_msm, recip_eea}
 use lagrange.{batch_inverses, lagrange_polynomial_basis}
 use omega_rotations.{rotate_omega, rotate_omegas}
 use aiken/primitive/bytearray
-use transcript.{construct_transcript, read_point, read_scalar, squeeze_challenge}
+use transcript.{
+  common_scalar, construct_transcript, read_point, read_scalar,
+  squeeze_challenge,
+}
 
 const n = {{{N}}}
 
@@ -59,6 +62,9 @@ const s_g2 =
 const proof_for_testing =
   #"{{PROOF_HEX}}"
 
+const public_inputs_for_testing =
+  {{{AIKEN_PUBLIC_INPUTS_FOR_TESTING}}}
+
 pub type ProofPieces {
 {{{AIKEN_PROOF_FIELDS}}}
 }
@@ -68,17 +74,25 @@ pub type Opening {
   evals: List<State<Scalar>>,
 }
 
-pub fn verifier(proof: Data) -> Bool {
-  let p = parse_proof(proof)
-  let expected_h = expected_h_eval(p)
-  shplonk_pairing_check(p, expected_h)
+pub fn verifier(proof: Data, public_inputs_raw: List<State<Scalar>>) -> Bool {
+  when public_inputs_raw is {
+    {{{AIKEN_PUBLIC_INPUT_PATTERN}}} -> {
+      let p = parse_proof(proof, public_inputs_raw)
+      let expected_h = expected_h_eval(p, public_inputs_raw)
+      shplonk_pairing_check(p, expected_h)
+    }
+    _ -> False
+  }
 }
 
-fn parse_proof(proof: Data) -> ProofPieces {
+fn parse_proof(proof: Data, public_inputs: List<State<Scalar>>) -> ProofPieces {
 {{{AIKEN_PARSE_PROOF}}}
 }
 
-fn expected_h_eval(p: ProofPieces) -> State<Scalar> {
+fn expected_h_eval(
+  p: ProofPieces,
+  public_inputs: List<State<Scalar>>,
+) -> State<Scalar> {
 {{{AIKEN_EXPECTED_H_EVAL}}}
 }
 
@@ -245,5 +259,5 @@ fn reverse_bytes(bytes: ByteArray) -> ByteArray {
 }
 
 test valid_axiom_shplonk_proof_benchmark() {
-  verifier(proof_for_testing)
+  verifier(proof_for_testing, public_inputs_for_testing)
 }

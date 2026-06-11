@@ -5,8 +5,13 @@ pub use adjusted_types::CardanoFriendlyBlake2b;
 pub mod axiom_shplonk;
 pub use axiom_shplonk::{
     AxiomShplonkOutputPaths, generate_axiom_shplonk_verifiers_from_circuit,
+    generate_axiom_shplonk_verifiers_from_circuit_and_instances,
+    generate_axiom_shplonk_verifiers_from_circuit_and_instances_with_paths,
     generate_axiom_shplonk_verifiers_from_circuit_with_paths,
-    generate_axiom_shplonk_verifiers_from_vk, generate_axiom_shplonk_verifiers_from_vk_with_paths,
+    generate_axiom_shplonk_verifiers_from_vk,
+    generate_axiom_shplonk_verifiers_from_vk_and_instances,
+    generate_axiom_shplonk_verifiers_from_vk_and_instances_with_paths,
+    generate_axiom_shplonk_verifiers_from_vk_with_paths,
 };
 pub(crate) mod emitters;
 pub(crate) mod extraction;

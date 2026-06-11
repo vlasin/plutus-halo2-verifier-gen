@@ -5,10 +5,12 @@
 //! Axiom proving artifacts: parameters, verifying key, and proof bytes.
 //!
 //! Supported scope is intentionally narrow. The generator currently targets
-//! Axiom Halo2 proofs over BLS12-381 KZG with SHPLONK openings and no public
-//! instance columns, no circuit-defined challenges, and only first-phase advice
-//! columns. Selector expressions are not supported. Unsupported layouts fail
-//! during verification-key extraction instead of emitting partial verifier code.
+//! Axiom Halo2 proofs over BLS12-381 KZG with SHPLONK openings, at most one
+//! public instance column with current-rotation queries, no circuit-defined
+//! challenges, and only first-phase advice columns. Selector expressions are not
+//! supported. Unsupported layouts fail during verification-key extraction
+//! instead of emitting partial verifier code. Public-input verifiers are
+//! specialized to the exact public input count supplied at generation time.
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use halo2_axiom::{
@@ -84,7 +86,8 @@ impl Default for AxiomShplonkOutputPaths {
 /// Generate both Aiken and Plinth verifier sources from Axiom proving artifacts.
 ///
 /// Current limitations:
-/// - no public instance columns,
+/// - zero or one public instance column,
+/// - instance queries at current rotation only,
 /// - no circuit-defined challenges,
 /// - no multi-phase advice columns,
 /// - no selector expressions,
@@ -97,10 +100,27 @@ pub fn generate_axiom_shplonk_verifiers_from_vk(
     vk: &VerifyingKey<G1Affine>,
     proof: &[u8],
 ) -> Result<()> {
-    generate_axiom_shplonk_verifiers_from_vk_with_paths(
+    generate_axiom_shplonk_verifiers_from_vk_and_instances(params, vk, proof, &[])
+}
+
+/// Generate both Aiken and Plinth verifier sources from Axiom proving artifacts
+/// and public instance values.
+///
+/// Public instances are supported only for Axiom KZG SHPLONK, where public
+/// inputs are absorbed as common transcript scalars and are not opened by the
+/// SHPLONK proof. The generated verifier accepts exactly the number of public
+/// inputs supplied here.
+pub fn generate_axiom_shplonk_verifiers_from_vk_and_instances(
+    params: &ParamsKZG<Bls12>,
+    vk: &VerifyingKey<G1Affine>,
+    proof: &[u8],
+    public_instances: &[&[BlsFr]],
+) -> Result<()> {
+    generate_axiom_shplonk_verifiers_from_vk_and_instances_with_paths(
         params,
         vk,
         proof,
+        public_instances,
         &AxiomShplonkOutputPaths::default(),
     )
 }
@@ -115,7 +135,23 @@ pub fn generate_axiom_shplonk_verifiers_from_vk_with_paths(
     proof: &[u8],
     paths: &AxiomShplonkOutputPaths,
 ) -> Result<()> {
-    let render_data = AxiomShplonkRenderData::from_vk_and_proof(params, vk, proof)?;
+    generate_axiom_shplonk_verifiers_from_vk_and_instances_with_paths(params, vk, proof, &[], paths)
+}
+
+/// Generate both Aiken and Plinth verifier sources from Axiom proving artifacts
+/// and public instance values into caller-provided output paths.
+///
+/// Has the same supported scope as
+/// [`generate_axiom_shplonk_verifiers_from_vk_and_instances`].
+pub fn generate_axiom_shplonk_verifiers_from_vk_and_instances_with_paths(
+    params: &ParamsKZG<Bls12>,
+    vk: &VerifyingKey<G1Affine>,
+    proof: &[u8],
+    public_instances: &[&[BlsFr]],
+    paths: &AxiomShplonkOutputPaths,
+) -> Result<()> {
+    let render_data =
+        AxiomShplonkRenderData::from_vk_and_proof(params, vk, proof, public_instances)?;
     render_axiom_shplonk_verifiers(&render_data.data, paths)
 }
 
@@ -131,10 +167,28 @@ pub fn generate_axiom_shplonk_verifiers_from_circuit<ConcreteCircuit>(
 where
     ConcreteCircuit: Circuit<BlsFr>,
 {
-    generate_axiom_shplonk_verifiers_from_circuit_with_paths(
+    generate_axiom_shplonk_verifiers_from_circuit_and_instances(params, circuit, proof, &[])
+}
+
+/// Generate both Aiken and Plinth verifier sources from an Axiom circuit,
+/// proof bytes, and public instance values.
+///
+/// Has the same supported scope as
+/// [`generate_axiom_shplonk_verifiers_from_vk_and_instances`].
+pub fn generate_axiom_shplonk_verifiers_from_circuit_and_instances<ConcreteCircuit>(
+    params: &ParamsKZG<Bls12>,
+    circuit: &ConcreteCircuit,
+    proof: &[u8],
+    public_instances: &[&[BlsFr]],
+) -> Result<()>
+where
+    ConcreteCircuit: Circuit<BlsFr>,
+{
+    generate_axiom_shplonk_verifiers_from_circuit_and_instances_with_paths(
         params,
         circuit,
         proof,
+        public_instances,
         &AxiomShplonkOutputPaths::default(),
     )
 }
@@ -152,9 +206,39 @@ pub fn generate_axiom_shplonk_verifiers_from_circuit_with_paths<ConcreteCircuit>
 where
     ConcreteCircuit: Circuit<BlsFr>,
 {
+    generate_axiom_shplonk_verifiers_from_circuit_and_instances_with_paths(
+        params,
+        circuit,
+        proof,
+        &[],
+        paths,
+    )
+}
+
+/// Generate both Aiken and Plinth verifier sources from an Axiom circuit,
+/// proof bytes, and public instance values into caller-provided output paths.
+///
+/// Has the same supported scope as
+/// [`generate_axiom_shplonk_verifiers_from_vk_and_instances`].
+pub fn generate_axiom_shplonk_verifiers_from_circuit_and_instances_with_paths<ConcreteCircuit>(
+    params: &ParamsKZG<Bls12>,
+    circuit: &ConcreteCircuit,
+    proof: &[u8],
+    public_instances: &[&[BlsFr]],
+    paths: &AxiomShplonkOutputPaths,
+) -> Result<()>
+where
+    ConcreteCircuit: Circuit<BlsFr>,
+{
     let vk = keygen_vk::<G1Affine, _, _>(params, circuit)
         .map_err(|err| anyhow!("failed to generate Axiom verifying key: {err:?}"))?;
-    generate_axiom_shplonk_verifiers_from_vk_with_paths(params, &vk, proof, paths)
+    generate_axiom_shplonk_verifiers_from_vk_and_instances_with_paths(
+        params,
+        &vk,
+        proof,
+        public_instances,
+        paths,
+    )
 }
 
 fn render_axiom_shplonk_verifiers(
@@ -211,8 +295,10 @@ impl AxiomShplonkRenderData {
         params: &ParamsKZG<Bls12>,
         vk: &VerifyingKey<G1Affine>,
         proof: &[u8],
+        public_instances: &[&[BlsFr]],
     ) -> Result<Self> {
-        let layout = AxiomLayout::from_vk(vk)?;
+        let public_inputs = validate_public_instances(vk, public_instances)?;
+        let layout = AxiomLayout::from_vk(vk, public_inputs.len())?;
         let domain = vk.get_domain();
         let n = domain.get_n();
         let barycentric_weight = BlsFr::from(n)
@@ -254,6 +340,22 @@ impl AxiomShplonkRenderData {
             reverse_hex_bytes(&g2_hex(params.s_g2()))?,
         );
         data.insert("PROOF_HEX".to_string(), hex::encode(proof));
+        data.insert(
+            "AIKEN_PUBLIC_INPUT_PATTERN".to_string(),
+            layout.aiken_public_input_pattern(),
+        );
+        data.insert(
+            "AIKEN_PUBLIC_INPUTS_FOR_TESTING".to_string(),
+            aiken_public_inputs_for_testing(&public_inputs),
+        );
+        data.insert(
+            "PLINTH_PUBLIC_INPUT_PATTERN".to_string(),
+            layout.plinth_public_input_pattern(),
+        );
+        data.insert(
+            "PLINTH_PUBLIC_INPUTS_FOR_TESTING".to_string(),
+            plinth_public_inputs_for_testing(&public_inputs),
+        );
         data.insert(
             "AIKEN_FIXED_COMMITMENTS".to_string(),
             aiken_fixed_commitments(&fixed_commitments),
@@ -365,8 +467,53 @@ struct RotationSet {
     commitments: Vec<CommitmentOpening>,
 }
 
+fn validate_public_instances(
+    vk: &VerifyingKey<G1Affine>,
+    public_instances: &[&[BlsFr]],
+) -> Result<Vec<BlsFr>> {
+    let cs = vk.cs();
+    match cs.num_instance_columns() {
+        0 => {
+            ensure!(
+                public_instances.is_empty(),
+                "Axiom SHPLONK generator got public instances for a circuit with no instance columns"
+            );
+            ensure!(
+                cs.instance_queries().is_empty(),
+                "Axiom SHPLONK generator found instance queries without instance columns"
+            );
+            Ok(Vec::new())
+        }
+        1 => {
+            ensure!(
+                public_instances.len() == 1,
+                "Axiom SHPLONK generator supports exactly one public instance column"
+            );
+            let public_inputs = public_instances[0];
+            ensure!(
+                !public_inputs.is_empty() || cs.instance_queries().is_empty(),
+                "Axiom SHPLONK generator requires public inputs for instance queries"
+            );
+            let max_public_inputs =
+                (vk.get_domain().get_n() as usize).saturating_sub(cs.blinding_factors() + 1);
+            ensure!(
+                public_inputs.len() <= max_public_inputs,
+                "Axiom public instance column has {} values, exceeding the maximum {}",
+                public_inputs.len(),
+                max_public_inputs
+            );
+            Ok(public_inputs.to_vec())
+        }
+        columns => {
+            bail!("Axiom SHPLONK generator supports at most one instance column, got {columns}")
+        }
+    }
+}
+
 struct AxiomLayout {
     num_advice_columns: usize,
+    public_input_count: usize,
+    has_instance_query: bool,
     quotient_poly_degree: usize,
     blinding_factors: usize,
     permutation_columns: Vec<PermutationColumn>,
@@ -379,11 +526,13 @@ struct AxiomLayout {
 }
 
 impl AxiomLayout {
-    fn from_vk(vk: &VerifyingKey<G1Affine>) -> Result<Self> {
+    fn from_vk(vk: &VerifyingKey<G1Affine>, public_input_count: usize) -> Result<Self> {
         let cs = vk.cs();
         ensure!(
-            cs.num_instance_columns() == 0 && cs.instance_queries().is_empty(),
-            "Axiom SHPLONK generator does not yet support instance columns"
+            cs.instance_queries()
+                .iter()
+                .all(|(column, rotation)| column.index() == 0 && rotation.0 == 0),
+            "Axiom SHPLONK generator supports only current-rotation queries on instance column 0"
         );
         ensure!(
             cs.num_challenges() == 0,
@@ -449,6 +598,8 @@ impl AxiomLayout {
 
         Ok(Self {
             num_advice_columns: cs.num_advice_columns(),
+            public_input_count,
+            has_instance_query: !cs.instance_queries().is_empty(),
             quotient_poly_degree,
             blinding_factors,
             permutation_columns,
@@ -481,6 +632,14 @@ impl AxiomLayout {
             .join("\n")
     }
 
+    fn aiken_public_input_pattern(&self) -> String {
+        wildcard_list_pattern(self.public_input_count)
+    }
+
+    fn plinth_public_input_pattern(&self) -> String {
+        wildcard_list_pattern(self.public_input_count)
+    }
+
     fn proof_fields(
         &self,
         indent: &str,
@@ -502,8 +661,10 @@ impl AxiomLayout {
     }
 
     fn aiken_parse_proof(&self) -> String {
-        let mut lines =
-            vec!["  let transcript = construct_transcript(proof, transcript_rep)".to_string()];
+        let mut lines = vec![
+            "  let transcript = construct_transcript(proof, transcript_rep)".to_string(),
+            "  let transcript = foldl(public_inputs, transcript, fn(input, transcript) { common_scalar(input, transcript) })".to_string(),
+        ];
         for item in self.proof_items() {
             let read = match item.kind {
                 ProofItemKind::Point => "read_point",
@@ -528,7 +689,8 @@ impl AxiomLayout {
     fn plinth_parse_proof(&self) -> String {
         let items = self.proof_items();
         let mut lines = vec![
-            "    let !state0 = (proof, commonScalar transcriptRep emptyByteString)".to_string(),
+            "    let !transcript0 = foldl (\\transcript input -> commonScalar input transcript) (commonScalar transcriptRep emptyByteString) publicInputs".to_string(),
+            "        !state0 = (proof, transcript0)".to_string(),
         ];
         for (idx, item) in items.iter().enumerate() {
             let read = match item.kind {
@@ -554,6 +716,7 @@ impl AxiomLayout {
 
     fn aiken_expected_h_eval(&self, vk: &VerifyingKey<G1Affine>) -> Result<String> {
         let mut lines = self.aiken_lagrange_prelude();
+        lines.extend(self.aiken_instance_eval_lines());
         let mut terms = Vec::<String>::new();
 
         for (idx, expression) in vk
@@ -579,6 +742,7 @@ impl AxiomLayout {
 
     fn plinth_expected_h_eval(&self, vk: &VerifyingKey<G1Affine>) -> Result<String> {
         let mut lines = self.plinth_lagrange_prelude();
+        lines.extend(self.plinth_instance_eval_lines());
         let mut terms = Vec::<String>::new();
 
         for (idx, expression) in vk
@@ -644,6 +808,41 @@ impl AxiomLayout {
             format!("        !lBlind = {}", plinth_sum(&blind_terms)),
             format!("        !l0 = lEvals !! {}", self.blinding_factors + 1),
             "        !activeRows = scalarOne - (lLast + lBlind)".to_string(),
+        ]
+    }
+
+    fn aiken_instance_eval_lines(&self) -> Vec<String> {
+        if !self.has_instance_query {
+            return Vec::new();
+        }
+        let last_rotation = self.public_input_count - 1;
+        vec![
+            format!(
+                "  let instance_rotations = rotate_omegas(omega, omega_inv, 0, {last_rotation})"
+            ),
+            "  let instance_lagrange = lagrange_polynomial_basis(p.x, xn, barycentric_weight, instance_rotations)".to_string(),
+            format!(
+                "  let {} = weighted_sum(public_inputs, instance_lagrange)",
+                instance_eval_name().aiken()
+            ),
+        ]
+    }
+
+    fn plinth_instance_eval_lines(&self) -> Vec<String> {
+        if !self.has_instance_query {
+            return Vec::new();
+        }
+        let rotations = (0..self.public_input_count)
+            .map(|rotation| format!("rotateOmega one ({rotation})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        vec![
+            format!("        !instanceRotations = [{rotations}]"),
+            "        !instanceLagrange = lagrangePolynomialBasis (x pieces) xn barycentricWeight instanceRotations".to_string(),
+            format!(
+                "        !{} = weightedSum publicInputs instanceLagrange",
+                instance_eval_name().plinth()
+            ),
         ]
     }
 
@@ -1120,7 +1319,10 @@ impl AxiomLayout {
                 let idx = self.advice_query_index(query.column_index(), query.rotation().0)?;
                 Ok(aiken_field_access(&advice_eval_name(idx)))
             }
-            Expression::Instance(_) => bail!("Axiom instance expressions are not supported"),
+            Expression::Instance(query) => {
+                self.ensure_supported_instance_query(query.column_index(), query.rotation().0)?;
+                Ok(instance_eval_name().aiken())
+            }
             Expression::Challenge(_) => {
                 bail!("Axiom circuit challenge expressions are not supported")
             }
@@ -1155,7 +1357,10 @@ impl AxiomLayout {
                 let idx = self.advice_query_index(query.column_index(), query.rotation().0)?;
                 Ok(plinth_field_access(&advice_eval_name(idx)))
             }
-            Expression::Instance(_) => bail!("Axiom instance expressions are not supported"),
+            Expression::Instance(query) => {
+                self.ensure_supported_instance_query(query.column_index(), query.rotation().0)?;
+                Ok(instance_eval_name().plinth())
+            }
             Expression::Challenge(_) => {
                 bail!("Axiom circuit challenge expressions are not supported")
             }
@@ -1218,7 +1423,10 @@ impl AxiomLayout {
                 let idx = self.fixed_query_index(column.column, 0)?;
                 Ok(aiken_field_access(&fixed_eval_name(idx)))
             }
-            ColumnKind::Instance => bail!("Axiom instance permutation columns are not supported"),
+            ColumnKind::Instance => {
+                self.ensure_supported_instance_query(column.column, 0)?;
+                Ok(instance_eval_name().aiken())
+            }
         }
     }
 
@@ -1232,7 +1440,10 @@ impl AxiomLayout {
                 let idx = self.fixed_query_index(column.column, 0)?;
                 Ok(plinth_field_access(&fixed_eval_name(idx)))
             }
-            ColumnKind::Instance => bail!("Axiom instance permutation columns are not supported"),
+            ColumnKind::Instance => {
+                self.ensure_supported_instance_query(column.column, 0)?;
+                Ok(instance_eval_name().plinth())
+            }
         }
     }
 
@@ -1248,6 +1459,14 @@ impl AxiomLayout {
             .with_context(|| {
                 format!("missing fixed query for column {column} at rotation {rotation}")
             })
+    }
+
+    fn ensure_supported_instance_query(&self, column: usize, rotation: i32) -> Result<()> {
+        ensure!(
+            self.has_instance_query && column == 0 && rotation == 0,
+            "missing supported instance query for column {column} at rotation {rotation}"
+        );
+        Ok(())
     }
 
     fn query_index(&self, queries: &[ColumnQuery], column: usize, rotation: i32) -> Result<usize> {
@@ -1781,6 +2000,46 @@ fn plinth_scalar_literal(scalar: BlsFr) -> String {
     )
 }
 
+fn wildcard_list_pattern(len: usize) -> String {
+    format!(
+        "[{}]",
+        (0..len)
+            .map(|_| "_".to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn aiken_public_inputs_for_testing(public_inputs: &[BlsFr]) -> String {
+    match public_inputs {
+        [] => "[]".to_string(),
+        inputs => format!(
+            "[{}]",
+            inputs
+                .iter()
+                .copied()
+                .map(aiken_scalar_literal)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn plinth_public_inputs_for_testing(public_inputs: &[BlsFr]) -> String {
+    match public_inputs {
+        [] => "[]".to_string(),
+        inputs => format!(
+            "[ {} ]",
+            inputs
+                .iter()
+                .copied()
+                .map(plinth_scalar_literal)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn advice_commitment_name(idx: usize) -> Name {
     Name::new(format!("advice_{idx}"))
 }
@@ -1791,6 +2050,10 @@ fn advice_eval_name(idx: usize) -> Name {
 
 fn fixed_eval_name(idx: usize) -> Name {
     Name::new(format!("fixed_eval_{idx}"))
+}
+
+fn instance_eval_name() -> Name {
+    Name::new("instance_eval")
 }
 
 fn permutation_common_eval_name(idx: usize) -> Name {
