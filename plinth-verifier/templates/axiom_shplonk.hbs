@@ -282,7 +282,6 @@ batchInverses (a : aCons) =
 
 {-# INLINEABLE weightedSum #-}
 weightedSum :: [Scalar] -> [Scalar] -> Scalar
-weightedSum [eval] _ = eval
 weightedSum evals basis =
     foldl (\acc (eval, basisEval) -> acc + eval * basisEval) scalarZero (zip evals basis)
 

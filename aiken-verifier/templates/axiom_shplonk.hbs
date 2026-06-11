@@ -211,15 +211,11 @@ fn weighted_sum(
   evals: List<State<Scalar>>,
   basis: List<State<Scalar>>,
 ) -> State<Scalar> {
-  when evals is {
-    [eval] -> eval
-    _ ->
-      foldl(
-        zip(evals, basis),
-        from_int(0),
-        fn((eval, basis), acc) { add(acc, mul(eval, basis)) },
-      )
-  }
+  foldl(
+    zip(evals, basis),
+    from_int(0),
+    fn((eval, basis), acc) { add(acc, mul(eval, basis)) },
+  )
 }
 
 fn point_opening(point: ByteArray, evals: List<State<Scalar>>) -> Opening {
